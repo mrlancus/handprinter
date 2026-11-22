@@ -79,7 +79,7 @@ All reviews were done by Sonnet subagents.
 
 ## Pull request
 
-PR description: see the PR on GitHub for branch `claude/blissful-shannon-mu38kt`. If GitHub access fails, the draft is below.
+Opened as https://github.com/mrlancus/handprinter/pull/1 (not merged). Short summary:
 
 > **Handprinter: local handwriting dataset and generation studio (first build)**
 >
