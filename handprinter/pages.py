@@ -98,23 +98,28 @@ def run_detection(conn: sqlite3.Connection, store: Store, source_id: str, replac
     result = detect.detect_layout(img, omitted_boxes(conn, source_id))
     created = {"lines": 0, "words": 0, "rulings": 0, "skipped_overlapping": 0}
     with transaction(conn):
-        detector_rows = conn.execute(
-            "SELECT id, revision FROM regions WHERE source_id = ? AND deleted = 0 AND created_by = 'detector'", (source_id,)
+        machine_rows = conn.execute(
+            """SELECT id FROM regions r WHERE source_id = ? AND deleted = 0 AND created_by IN ('detector', 'machine')
+               AND NOT EXISTS (SELECT 1 FROM region_revisions v WHERE v.region_id = r.id AND v.actor = 'human')""", (source_id,)
         ).fetchall()
-        if detector_rows and not replace:
+        has_detector = conn.execute(
+            "SELECT 1 FROM regions WHERE source_id = ? AND deleted = 0 AND created_by = 'detector' LIMIT 1", (source_id,)).fetchone()
+        if has_detector and not replace:
             return {"skipped": True, "reason": "detector proposals already exist; use replace to re-run", **created}
-        # Only untouched detector proposals are replaced; anything edited or drawn by a person is kept.
-        for row in detector_rows:
-            if row["revision"] == 1:
-                review._write(conn, review.get_region(conn, row["id"]), {"deleted": 1}, "detector", "replaced_by_redetect")
-        kept = [Box(r["x"], r["y"], r["w"], r["h"]) for r in conn.execute(
-            "SELECT x, y, w, h FROM regions WHERE source_id = ? AND deleted = 0 AND kind IN ('line', 'word', 'block')", (source_id,))]
+        # Re-detecting replaces every machine guess nobody has touched (detector boxes, recogniser word cuts and
+        # their suggested text). Anything a person drew, moved, typed, approved or excluded is kept.
+        for row in machine_rows if replace else []:
+            review._write(conn, review.get_region(conn, row["id"]), {"deleted": 1}, "detector", "replaced_by_redetect")
+        kept = conn.execute(
+            "SELECT id, kind, x, y, w, h FROM regions WHERE source_id = ? AND deleted = 0 AND kind IN ('line', 'word', 'block')", (source_id,)).fetchall()
+        kept_lines = [Box(r["x"], r["y"], r["w"], r["h"]) for r in kept if r["kind"] in ("line", "block")]
+        kept_words = [(r["id"], Box(r["x"], r["y"], r["w"], r["h"])) for r in kept if r["kind"] == "word"]
 
-        def overlaps_kept(box: Box) -> bool:
-            return any(box.intersection_area(k) > 0.5 * min(box.w * box.h, k.w * k.h) for k in kept)
+        def overlaps(box: Box, others: list[Box]) -> bool:
+            return any(box.intersection_area(k) > 0.5 * min(box.w * box.h, k.w * k.h) for k in others)
 
         for ruling in result.rulings:
-            if overlaps_kept(ruling):
+            if overlaps(ruling, kept_lines):
                 created["skipped_overlapping"] += 1
                 continue
             review.create_region(conn, source, "block", ruling, actor="detector", cls="printed_ruling")
@@ -123,14 +128,19 @@ def run_detection(conn: sqlite3.Connection, store: Store, source_id: str, replac
             flags = ["ruling_overlap"] if line.overlaps_ruling else []
             if line.touches_neighbour:
                 flags.append("lines_touching")
-            if overlaps_kept(line.box):
+            if overlaps(line.box, kept_lines):
                 created["skipped_overlapping"] += 1
                 continue
             line_flags = flags + (["may_be_several_lines"] if line.may_hold_several else [])
             reason = "this box may hold more than one line of writing; split it if so" if line.may_hold_several else None
             line_region = review.create_region(conn, source, "line", line.box, actor="detector", flags=line_flags, review_reason=reason)
             created["lines"] += 1
+            mine = [(wid, wb) for wid, wb in kept_words if line.box.intersection_area(wb) > 0.5 * wb.w * wb.h]
+            for wid, _ in mine:  # your own word boxes join the new line they sit in
+                conn.execute("UPDATE regions SET parent_id = ? WHERE id = ?", (line_region["id"], wid))
             for index, wbox in enumerate(line.words):
+                if overlaps(wbox, [wb for _, wb in mine]):
+                    continue
                 at_edge = index in line.words_at_edge
                 review.create_region(conn, source, "word", wbox, actor="detector", parent_id=line_region["id"],
                                      flags=flags + (["runs_off_edge"] if at_edge else []),
@@ -241,6 +251,23 @@ def paint_omitted(img: Image.Image, context: Box, areas: list[Box], fill: tuple[
             continue
         draw.rectangle([max(0, x0), max(0, y0), min(out.width, x1) - 1, min(out.height, y1) - 1], fill=fill)
     return out
+
+
+def fade_outside(img: Image.Image, context: Box, target: Box, strength: float = 0.75) -> Image.Image:
+    """Fade everything outside `target` towards white, so a reader sees which line is meant.
+
+    The surrounding lines stay faintly visible as context; only the target keeps full contrast.
+    Used for recognition images only, never for training crops.
+    """
+    sx, sy = img.width / context.w, img.height / context.h
+    x0, y0 = max(0, round((target.x - context.x) * sx)), max(0, round((target.y - context.y) * sy))
+    x1, y1 = min(img.width, round((target.x + target.w - context.x) * sx)), min(img.height, round((target.y + target.h - context.y) * sy))
+    if x0 <= 0 and y0 <= 0 and x1 >= img.width and y1 >= img.height:
+        return img
+    faded = Image.blend(img.convert("RGB"), Image.new("RGB", img.size, (255, 255, 255)), strength)
+    if x1 > x0 and y1 > y0:
+        faded.paste(img.convert("RGB").crop((x0, y0, x1, y1)), (x0, y0))
+    return faded
 
 
 # ---------- per-page analysis ----------

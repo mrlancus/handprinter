@@ -104,41 +104,57 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
     clean[:, vertical] = False
     vertical_rulings = [Box(x0, 0, x1 - x0, h) for x0, x1 in _runs(vertical, min_len=1)]
 
-    profile = _smooth(clean.sum(axis=1).astype(float), max(1, h // 300))
-    threshold = max(1.0, 0.04 * float(profile.max(initial=0)))
-    bands = _merge_runs(_runs(profile > threshold, min_len=max(3, h // 200)), max_gap=max(2, h // 250))
-    bands, band_notes = split_touching_bands(bands, profile)
+    # Columns, headings and separate notes first (recursive XY cut), then lines inside each block,
+    # so a line never runs across two columns or picks up a neighbouring note.
+    blocks = xy_blocks(clean)
+    per_block = []
+    for bx0, by0, bx1, by1 in blocks:
+        sub = clean[by0:by1, bx0:bx1]
+        bh = by1 - by0
+        profile = _smooth(sub.sum(axis=1).astype(float), max(1, h // 400))
+        threshold = max(1.0, 0.06 * float(profile.max(initial=0)))
+        bands = _merge_runs(_runs(profile > threshold, min_len=max(2, h // 300)), max_gap=max(1, h // 400))
+        per_block.append((bx0, by0, bx1, by1, profile, [(by0 + a, by0 + b) for a, b in bands if b - a >= 2], bh))
+    all_heights = [b - a for *_, bands, _bh in per_block for a, b in bands]
+    typical = float(np.median(all_heights)) if len(all_heights) >= 3 else None
 
     lines: list[DetectedLine] = []
-    for index, (y0, y1) in enumerate(bands):
-        # Tails and loops (g, y, f, capitals) are often too thin to count towards the band itself:
-        # words may grow into the space halfway to the neighbouring lines to keep them whole.
-        lo = 0 if index == 0 else (bands[index - 1][1] + y0) // 2
-        hi = h if index == len(bands) - 1 else (y1 + bands[index + 1][0]) // 2
-        band = clean[y0:y1]
-        cols = band.any(axis=0)
-        if cols.sum() < 3:
-            continue
-        line_h = y1 - y0
-        ink_runs = _runs(cols, min_len=1)
-        segments = _merge_runs(ink_runs, max_gap=word_gap_threshold(ink_runs, line_h))
-        words = []
-        for x0, x1 in segments:
-            ys_ink = np.nonzero(band[:, x0:x1].any(axis=1))[0]
-            if len(ys_ink) == 0 or (x1 - x0) * len(ys_ink) < 12:
+    for bx0, by0, bx1, by1, profile, bands, _bh in per_block:
+        shifted = [(a - by0, b - by0) for a, b in bands]
+        split, notes = split_touching_bands(shifted, profile, typical)
+        bands = [(by0 + a, by0 + b) for a, b in split]
+        band_notes = {(by0 + a, by0 + b): v for (a, b), v in notes.items()}
+        for index, (y0, y1) in enumerate(bands):
+            # Tails and loops (g, y, f, capitals) are often too thin to count towards the band itself:
+            # words may grow into the space halfway to the neighbouring lines to keep them whole.
+            lo = by0 if index == 0 else (bands[index - 1][1] + y0) // 2
+            hi = by1 if index == len(bands) - 1 else (y1 + bands[index + 1][0]) // 2
+            band = clean[y0:y1, bx0:bx1]
+            cols = band.any(axis=0)
+            if cols.sum() < 3:
                 continue
-            top, bottom = _grow_vertically(clean, ruling_rows, x0, x1, y0 + int(ys_ink[0]), y0 + int(ys_ink[-1]) + 1, lo, hi)
-            words.append(Box(x0, top, x1 - x0, bottom - top))
-        if not words:
-            continue
-        line_box = words[0]
-        for wb in words[1:]:
-            line_box = line_box.union(wb)
-        overlaps = any(line_box.intersection_area(r.pad(2)) > 0 for r in rulings)
-        edge = 2  # px at work scale: writing that runs to the photo edge is probably cut off
-        at_edge = frozenset(i for i, wb in enumerate(words) if wb.x <= edge or wb.x + wb.w >= w - edge or wb.y <= edge or wb.y + wb.h >= h - edge)
-        note = band_notes.get((y0, y1), "")
-        lines.append(DetectedLine(line_box, words, overlaps, note == "unsplit", note == "split", at_edge))
+            line_h = y1 - y0
+            ink_runs = _runs(cols, min_len=1)
+            segments = _merge_runs(ink_runs, max_gap=word_gap_threshold(ink_runs, line_h))
+            words = []
+            for sx0, sx1 in segments:
+                ys_ink = np.nonzero(band[:, sx0:sx1].any(axis=1))[0]
+                if len(ys_ink) == 0 or (sx1 - sx0) * len(ys_ink) < 12:
+                    continue
+                x0, x1 = bx0 + sx0, bx0 + sx1
+                top, bottom = _grow_vertically(clean, ruling_rows, x0, x1, y0 + int(ys_ink[0]), y0 + int(ys_ink[-1]) + 1, lo, hi)
+                words.append(Box(x0, top, x1 - x0, bottom - top))
+            if not words:
+                continue
+            line_box = words[0]
+            for wb in words[1:]:
+                line_box = line_box.union(wb)
+            overlaps = any(line_box.intersection_area(r.pad(2)) > 0 for r in rulings)
+            edge = 2  # px at work scale: writing that runs to the photo edge is probably cut off
+            at_edge = frozenset(i for i, wb in enumerate(words) if wb.x <= edge or wb.x + wb.w >= w - edge or wb.y <= edge or wb.y + wb.h >= h - edge)
+            note = band_notes.get((y0, y1), "")
+            lines.append(DetectedLine(line_box, words, overlaps, note == "unsplit", note == "split", at_edge))
+    lines.sort(key=lambda line: (line.box.y, line.box.x))
 
     inv = 1 / scale
     pad = 4 * inv
@@ -154,7 +170,9 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
     )
 
 
-def split_touching_bands(bands: list[tuple[int, int]], profile: np.ndarray) -> tuple[list[tuple[int, int]], dict[tuple[int, int], str]]:
+def split_touching_bands(
+    bands: list[tuple[int, int]], profile: np.ndarray, typical: float | None = None,
+) -> tuple[list[tuple[int, int]], dict[tuple[int, int], str]]:
     """Split bands that are much taller than the page's typical line: lines whose tails touch merge into one band.
 
     Each tall band is cut into round(height / typical) lines at the emptiest row near each expected
@@ -162,9 +180,10 @@ def split_touching_bands(bands: list[tuple[int, int]], profile: np.ndarray) -> t
     band with no clear place to cut (so a person checks it).
     """
     notes: dict[tuple[int, int], str] = {}
-    if len(bands) < 3:
-        return bands, notes
-    typical = float(np.median([b - a for a, b in bands]))
+    if typical is None:
+        if len(bands) < 3:
+            return bands, notes
+        typical = float(np.median([b - a for a, b in bands]))
     out: list[tuple[int, int]] = []
     for a, b in bands:
         height = b - a
@@ -193,6 +212,49 @@ def split_touching_bands(bands: list[tuple[int, int]], profile: np.ndarray) -> t
             out.append((top, bottom))
             notes[(top, bottom)] = "split"
     return out, notes
+
+
+def xy_blocks(mask: np.ndarray, min_gutter: int | None = None, min_gap: int | None = None) -> list[tuple[int, int, int, int]]:
+    """Split the page's ink into blocks (columns, headings, separate notes) by recursive XY cut.
+
+    A block is cut at the widest empty vertical gutter (at least ~2.5% of the page width) or,
+    failing that, the tallest empty horizontal gap. A column or row counts as empty when it has
+    almost no ink, so stray specks do not hold two columns together. Returns (x0, y0, x1, y1).
+    """
+    h, w = mask.shape
+    min_gutter = min_gutter or max(8, int(0.025 * w))
+    min_gap = min_gap or max(4, h // 120)
+    out: list[tuple[int, int, int, int]] = []
+
+    def interior_gaps(counts: np.ndarray, tol: float, min_len: int) -> list[tuple[int, int]]:
+        empty = counts <= tol
+        return [(a, b) for a, b in _runs(empty, min_len=min_len) if a > 0 and b < len(counts)]
+
+    def cut(x0: int, y0: int, x1: int, y1: int, depth: int) -> None:
+        sub = mask[y0:y1, x0:x1]
+        rows, cols = np.flatnonzero(sub.any(axis=1)), np.flatnonzero(sub.any(axis=0))
+        if len(rows) == 0:
+            return
+        x0, x1, y0, y1 = x0 + int(cols[0]), x0 + int(cols[-1]) + 1, y0 + int(rows[0]), y0 + int(rows[-1]) + 1
+        sub = mask[y0:y1, x0:x1]
+        if depth < 12:
+            gutters = interior_gaps(sub.sum(axis=0), max(1.0, 0.003 * (y1 - y0)), min_gutter)
+            if gutters and (y1 - y0) >= 3 * min_gap:
+                a, b = max(gutters, key=lambda g: g[1] - g[0])
+                cut(x0, y0, x0 + a, y1, depth + 1)
+                cut(x0 + b, y0, x1, y1, depth + 1)
+                return
+            # rows must be truly empty: a thin tail crossing the gap keeps two lines in one block
+            gaps = interior_gaps(sub.sum(axis=1), 0, min_gap)
+            if gaps:
+                a, b = max(gaps, key=lambda g: g[1] - g[0])
+                cut(x0, y0, x1, y0 + a, depth + 1)
+                cut(x0, y0 + b, x1, y1, depth + 1)
+                return
+        out.append((x0, y0, x1, y1))
+
+    cut(0, 0, w, h, 0)
+    return out
 
 
 def vertical_rule_columns(mask: np.ndarray, min_run: float = 0.15) -> np.ndarray:

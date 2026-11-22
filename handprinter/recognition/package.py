@@ -132,6 +132,9 @@ def build(
         working, source = working_cache[item.source_id]
         # Areas you omitted (diagrams, printed text, other people's writing) are blanked before sending.
         crop = pages.paint_omitted(imaging.cut_crop(working, pages.working_to_processed(source), item.context), item.context, omitted[item.source_id])
+        if item.context_type == "line":
+            # Only the target line keeps full contrast: neighbours are faded context, so they are not read as part of it.
+            crop = pages.fade_outside(crop, item.context, item.target)
         scale = fit_within(crop.width, crop.height, MAX_LONG_EDGE, MAX_PIXELS)
         if scale < 1:
             crop = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.Resampling.LANCZOS)

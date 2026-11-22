@@ -16,6 +16,7 @@ import { trackJob } from '../jobs.js';
 /** Plain words for every flag a box can carry. */
 const FLAG_TEXT = /** @type {Record<string, string>} */ ({
   uncertain_span: 'unsure about some letters',
+  text_may_not_fit: 'the text read does not fit this box: check it, or fix the box',
   alignment_ambiguous: 'box and word may not match',
   runs_off_edge: 'touches the photo edge: is the whole word there?',
   lines_touching: 'touches the next line',
@@ -29,6 +30,9 @@ const FLAG_TEXT = /** @type {Record<string, string>} */ ({
   geometry_stale: 'box moved by a page correction', machine_mark: 'mark found by the recogniser',
 });
 const flagText = (/** @type {string} */ f) => FLAG_TEXT[f] || (f.startsWith('recogniser_type_') ? `looks like ${f.slice(16).replaceAll('_', ' ')}` : f.replaceAll('_', ' '));
+
+/** @param {string} text @param {number} n */
+const shorten = (text, n) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
 
 /** @param {Region} w */
 function wordIssues(w) {
@@ -109,6 +113,10 @@ export async function render(root, params) {
     /** @type {Map<string, {input: HTMLInputElement, box: HTMLElement}>} */
     const parts = new Map();
     const note = h('p', { class: 'xs ck-note', role: 'status' });
+    // A close-up of just the word being looked at, so a big or busy line never hides it.
+    const zoomImg = /** @type {HTMLImageElement} */ (h('img', { class: 'ck-zoom__img', alt: '' }));
+    const zoomText = h('span', { class: 'xs muted' });
+    const zoom = h('div', { class: 'ck-zoom', hidden: true }, zoomImg, zoomText);
     const preview = h('div', { class: 'ck-preview' });
 
     // the line photo with each word box outlined
@@ -121,7 +129,8 @@ export async function render(root, params) {
       const iw = /** @type {HTMLImageElement} */ (img).naturalWidth, ih = /** @type {HTMLImageElement} */ (img).naturalHeight;
       if (!iw || !ih) return;
       const avail = scroller.clientWidth || 600;
-      const max = matchMedia('(pointer: coarse)').matches ? 120 : 104;
+      // a box that is far from a long thin line (a block, several lines) is shown taller so it stays legible
+      const max = iw / ih < 5 ? 280 : matchMedia('(pointer: coarse)').matches ? 120 : 104;
       img.style.height = `${Math.round(Math.max(56, Math.min(max, ih, avail * ih / iw)))}px`;
     };
     img.addEventListener('load', fitImg);
@@ -161,6 +170,10 @@ export async function render(root, params) {
         part.box.classList.add('is-active');
         part.box.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
         note.textContent = issues.length ? `This word: ${issues.join('; ')}.` : '';
+        zoomImg.src = `/api/regions/${w.id}/crop?rev=${w.revision}`;
+        zoomImg.alt = `Close-up of the word box for “${w.text || ''}”`;
+        zoomText.textContent = 'This word’s box, close up';
+        zoom.hidden = false;
       });
       input.addEventListener('blur', () => { part.box.classList.remove('is-active'); });
       input.addEventListener('keydown', (e) => {
@@ -192,8 +205,8 @@ export async function render(root, params) {
     const approveBtn = h('button', { class: 'btn btn--primary', type: 'button', onClick: () => { approve(); } }, icon('check'), 'Approve line');
     const el = h('li', { class: `ck-card${isClean(item) ? '' : ' ck-card--warn'}`, dataset: { line: line.id } },
       scroller,
-      issues.length ? h('p', { class: 'xs ck-issues' }, icon('flag'), issues.join(' · ')) : null,
-      chips, preview, note,
+      issues.length ? h('p', { class: 'xs ck-issues', title: issues.join(' · ') }, icon('flag'), shorten(issues.join(' · '), 220)) : null,
+      chips, preview, zoom, note,
       h('div', { class: 'row ck-actions' },
         approveBtn,
         h('button', { class: 'btn btn--quiet', type: 'button', title: 'Not usable: cut off, scribble, someone else’s writing', onClick: () => leaveOut() }, icon('x'), 'Leave line out'),

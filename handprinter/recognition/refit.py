@@ -150,9 +150,36 @@ class LineInk:
         return mask, x0, y0
 
 
-def refit_words(ink: LineInk, source: dict[str, Any], line_box: Box, tokens: list[str], pad: float = 4.0) -> tuple[list[Box], bool] | None:
+def implausible(mask: np.ndarray, tokens: list[str], typical_line_h: float | None) -> str | None:
+    """Why this text cannot be the writing in this line box, or None if it plausibly is.
+
+    Handwritten letters are roughly 0.1-1x as wide as a line is tall (ascenders to descenders).
+    Far more letters than that (text from other lines) or a box much taller than the page's
+    usual line (several lines in one box) means the boxes must not be cut from this text.
+    """
+    if mask.size == 0 or not mask.any():
+        return "no ink found in this box"
+    rows = np.flatnonzero(mask.any(axis=1))
+    ink_h = rows[-1] - rows[0] + 1
+    if typical_line_h and ink_h > 1.9 * typical_line_h:
+        return "this box looks taller than one line of writing; split it into lines"
+    ink_w = int(mask.any(axis=0).sum())
+    chars = sum(len(t) for t in tokens)
+    ratio = (ink_w / max(1, chars)) / max(1, ink_h)
+    if ratio < 0.1:
+        return "the text read is too long for this box (it may include words from other lines)"
+    if ratio > 1.5:
+        return "the text read is too short for this box (some words may be missing)"
+    return None
+
+
+def refit_words(
+    ink: LineInk, source: dict[str, Any], line_box: Box, tokens: list[str], pad: float = 4.0, typical_line_h: float | None = None,
+) -> tuple[list[Box], bool] | None:
     """Word boxes (processed pixels) for a line known to hold these words, and whether every cut was clear."""
     mask, ox, oy = ink.mask(source, line_box)
+    if implausible(mask, tokens, typical_line_h):
+        return None
     seg = segment_by_count(mask, [max(1, len(t)) for t in tokens])
     if seg is None:
         return None
@@ -180,7 +207,13 @@ def recut_line(conn: sqlite3.Connection, store: Store, line_id: str, text: str) 
         raise review.ReviewError("not a line")
     if line["processing_rev"] != source["processing_rev"]:
         raise review.ReviewError("the page was corrected since this line was drawn; re-detect or fix it in Review")
-    fitted = refit_words(LineInk(conn, store), source, Box(line["x"], line["y"], line["w"], line["h"]), tokens)
+    ink = LineInk(conn, store)
+    box = Box(line["x"], line["y"], line["w"], line["h"])
+    mask, _, _ = ink.mask(source, box)
+    problem = implausible(mask, tokens, None)
+    if problem:
+        raise review.ReviewError(f"{problem}; fix the boxes in Review instead")
+    fitted = refit_words(ink, source, box, tokens)
     if fitted is None:
         raise review.ReviewError(f"could not find {len(tokens)} separate words in this line's ink; split the boxes in Review instead")
     boxes, clear = fitted

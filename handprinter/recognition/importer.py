@@ -201,7 +201,17 @@ def _store_result(
     text = result["transcription"]
     was_refit = False
     # A whole-maths line is one LaTeX example; spreading LaTeX over word boxes would be guesswork.
-    if text and result["region_type"] != "equation":
+    misfit = None
+    if text and result["region_type"] != "equation" and ink is not None:
+        # Text that cannot be the writing in this box (read from other lines, or several lines in one box)
+        # is kept as the line's suggestion, flagged, and never spread over word boxes or used to cut them.
+        line_now = review.get_region(conn, region_id)
+        mask, _, _ = ink.mask(src, Box(line_now["x"], line_now["y"], line_now["w"], line_now["h"]))
+        misfit = refit.implausible(mask, aligner.tokenize(text), _typical_line_height(conn, src["id"]))
+        if misfit:
+            line_flags.add("text_may_not_fit")
+            reason = ((reason + "; ") if reason else "") + misfit
+    if text and result["region_type"] != "equation" and not misfit:
         alignment = aligner.align(text, [w["box"][2] for w in words]) if words else None
         if ink is not None and (alignment is None or alignment.ambiguous):
             outcome = _refit_line(conn, ink, src, region_id, words, text, alignment, flags, proposal_id, result["uncertain_spans"])
@@ -211,7 +221,7 @@ def _store_result(
                 if not clear:
                     line_flags.add("alignment_ambiguous")
                 reason = ((reason + "; ") if reason else "") + note
-    if text and words and result["region_type"] != "equation" and not was_refit:
+    if text and words and result["region_type"] != "equation" and not was_refit and not misfit:
         assert alignment is not None
         if alignment.ambiguous:
             line_flags.add("alignment_ambiguous")
@@ -253,6 +263,13 @@ def _store_result(
     return proposal_id, protected, was_refit
 
 
+def _typical_line_height(conn: sqlite3.Connection, source_id: str) -> float | None:
+    """Median height of the page's line boxes (processed pixels), or None with too few lines to tell."""
+    heights = sorted(r[0] for r in conn.execute(
+        "SELECT h FROM regions WHERE source_id = ? AND kind = 'line' AND deleted = 0 AND cls != 'omitted'", (source_id,)))
+    return float(heights[len(heights) // 2]) if len(heights) >= 3 else None
+
+
 def _untouched_machine_box(conn: sqlite3.Connection, region_id: str, packaged_revision: int | None) -> bool:
     """True if no person has drawn, moved, labelled or decided on this region."""
     row = conn.execute("SELECT * FROM regions WHERE id = ?", (region_id,)).fetchone()
@@ -278,7 +295,8 @@ def _refit_line(
         return None
     line = review.get_region(conn, line_id)
     tokens = aligner.tokenize(text)
-    fitted = refit.refit_words(ink, source, Box(line["x"], line["y"], line["w"], line["h"]), tokens)
+    fitted = refit.refit_words(ink, source, Box(line["x"], line["y"], line["w"], line["h"]), tokens,
+                               typical_line_h=_typical_line_height(conn, source["id"]))
     if fitted is None:
         return None
     boxes, clear = fitted

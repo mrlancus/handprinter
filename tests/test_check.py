@@ -86,3 +86,59 @@ def test_recut_line_follows_the_words_the_person_typed(conn, store, page_lines):
     assert all(a["x"] + a["w"] <= b["x"] + 1 for a, b in zip(words, words[1:]))
     with pytest.raises(review.ReviewError):
         refit.recut_line(conn, store, item["line"]["id"], "b e c u a s e i t w a s l a t e x y z")  # more words than ink pieces
+
+
+def _answer(store, pkg, entry, text):
+    result = {
+        "schema_version": "1", "item_id": entry["item_id"], "image_sha256": entry["image_sha256"], "model": "claude-haiku-test",
+        "region_type": "handwriting", "transcription": text, "uncertain_spans": [], "marks": [], "quality_flags": [],
+        "review_reasons": [], "author_ambiguous": False,
+    }
+    (package.package_dir(store, pkg) / "results" / f"{entry['item_id']}.json").write_text(json.dumps(result), encoding="utf-8")
+
+
+def test_text_from_other_lines_is_flagged_and_never_cuts_boxes(conn, store, settings, page_lines):
+    sid, lines = page_lines
+    item = lines[0]  # "the quick brown fox"
+    before = {w["id"]: (w["x"], w["w"], w["text"]) for w in item["words"]}
+    info = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    entry = next(e for e in package.load_manifest(store, info["package_id"])["items"] if e["region_id"] == item["line"]["id"])
+    # the recogniser wandered into the lines below: far more text than this box can hold
+    _answer(store, info["package_id"], entry, "the quick brown fox jumps over the lazy dog becuase it was late Meet me at 4pm and then some more words")
+    importer.import_package(conn, store, info["package_id"])
+    line = review.get_region(conn, item["line"]["id"])
+    assert "text_may_not_fit" in line["flags"] and "too long" in line["review_reason"]
+    assert {w["id"]: (w["x"], w["w"], w["text"]) for w in review.check_lines(conn, sid)[0]["words"]} == before
+
+
+def test_recognition_images_fade_everything_but_the_target_line(conn, store, settings, page_lines):
+    from PIL import Image
+    import numpy as np
+    sid, lines = page_lines
+    info = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    root = package.package_dir(store, info["package_id"])
+    entry = package.load_manifest(store, info["package_id"])["items"][1]
+    img = np.asarray(Image.open(root / entry["image"]).convert("L"), dtype=float)
+    x, y, w, h = (round(v) for v in entry["target_box"])
+    inside = img[y:y + h, x:x + w]
+    outside = np.concatenate([img[:max(1, y)].ravel(), img[y + h:].ravel()])
+    assert inside.min() < 100  # the target keeps its dark ink
+    assert outside.min() > 150  # neighbouring lines are faded to pale grey
+
+
+def test_redetect_clears_machine_guesses_but_keeps_your_work(conn, store, settings, page_lines):
+    sid, lines = page_lines
+    mine = lines[0]["words"][0]
+    review.human_edit(conn, mine["id"], {"text": "the"})  # you typed this word
+    review.approve_line(conn, lines[1]["line"]["id"], {w["id"]: t for w, t in zip(lines[1]["words"], "jumps over the lazy dog".split())})
+    info = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    for e in package.load_manifest(store, info["package_id"])["items"]:
+        _answer(store, info["package_id"], e, "some machine guess")
+    importer.import_package(conn, store, info["package_id"])
+    pages.run_detection(conn, store, sid, replace=True)
+    alive = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM regions WHERE source_id = ? AND deleted = 0", (sid,))}
+    assert mine["id"] in alive and alive[mine["id"]]["text"] == "the"
+    assert alive[mine["id"]]["parent_id"] in alive  # attached to a live line
+    approved = review.get_region(conn, lines[1]["line"]["id"])
+    assert approved["deleted"] == 0 and approved["status"] == "approved"
+    assert not [r for r in alive.values() if r["text"] == "some machine guess" and r["created_by"] != "human"]

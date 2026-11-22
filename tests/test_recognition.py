@@ -43,7 +43,7 @@ def test_package_layout_and_manifest(store, built):
     sid, info, manifest = built
     root = package.package_dir(store, info["package_id"])
     assert (root / "prompt.md").is_file() and (root / "result.schema.json").is_file() and (root / "results").is_dir()
-    assert manifest["prompt_version"] == "v2" and manifest["model_configured"] == "haiku"
+    assert manifest["prompt_version"] == "v3" and manifest["model_configured"] == "haiku"
     kinds = [e["context_type"] for e in manifest["items"]]
     assert kinds[0] == "page_overview" and kinds.count("line") == 4
     for e in manifest["items"]:
@@ -78,7 +78,7 @@ def test_round_trip_with_partial_malformed_and_mismatched_results(conn, store, b
     words = conn.execute("SELECT text FROM regions WHERE parent_id = ? AND deleted = 0 AND kind = 'word' ORDER BY x", (good["region_id"],)).fetchall()
     assert [w["text"] for w in words] == ["the", "quick", "brown", "fox"]
     prop = conn.execute("SELECT model_reported, prompt_version FROM proposals WHERE item_id = ? AND package_id = ?", (good["item_id"], pkg)).fetchone()
-    assert tuple(prop) == ("claude-haiku-test", "v2")
+    assert tuple(prop) == ("claude-haiku-test", "v3")
 
     # the missing item arrives later: import reconciles it alone, nothing is re-imported
     _write(store, pkg, missing["item_id"], _result(missing, transcription="Meet me at 4pm", uncertain_spans=[{"start": 11, "end": 14, "reason": "4 or A?"}]))

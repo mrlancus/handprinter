@@ -135,7 +135,7 @@ def _three_then(*rows):
 
 def test_touching_lines_are_split_and_flagged():
     # tails of the fourth line (j, p, y, q, g) reach the capitals of the fifth: one ink band
-    found = detect.detect_layout(_three_then((90, 530, "jumpy quay gyp"), (90, 578, "Hold The Bell")))
+    found = detect.detect_layout(_three_then((90, 530, "jumpy quay gyp"), (90, 576, "Hold The Bell")))
     assert len(found.lines) == 5, [line.box for line in found.lines]
     fourth, fifth = found.lines[3], found.lines[4]
     assert fourth.touches_neighbour and fifth.touches_neighbour and not fourth.may_hold_several
@@ -151,3 +151,26 @@ def test_words_running_off_the_photo_are_flagged():
     found = detect.detect_layout(_hand_page([(90, 80, "stays inside"), (90, 230, "goes right off the page"), (90, 380, "inside again")], size=(560, 900)))
     edge_lines = [line for line in found.lines if line.words_at_edge]
     assert len(edge_lines) == 1 and edge_lines[0].box.y > 200
+
+
+def test_columns_are_found_before_lines():
+    """Dense two-column notes with a heading and a boxed diagram: no line may run across columns."""
+    img = Image.new("RGB", (1600, 1100), (250, 250, 247))
+    draw = ImageDraw.Draw(img)
+    small = _font(22)
+    draw.text((60, 30), "Acids and alkalis", fill=(30, 30, 40), font=_font(34))
+    left = ["An acid is a species that", "when dissolved in water", "forms an aqueous solution", "that will release H+ ions.",
+            "A common acid is HCl", "Bases and alkalis react", "with an acid and accept", "H+ ions in neutralisation"]
+    right = ["Water of crystallisation", "a crystalline compound", "that contains water", "molecules is hydrated",
+             "Thermal decomposition of", "salts can occur on heating", "MgSO4 gives MgO and gas"]
+    for i, t in enumerate(left):
+        draw.text((60, 110 + i * 34), t, fill=(30, 30, 40), font=small)
+    for i, t in enumerate(right):
+        draw.text((860, 104 + i * 34), t, fill=(30, 30, 40), font=small)  # slightly offset baselines
+    draw.rectangle([860, 520, 1300, 760], outline=(30, 30, 40), width=3)  # a diagram box
+    found = detect.detect_layout(img)
+    texty = [line for line in found.lines if line.box.y < 450]
+    assert len(texty) == 1 + len(left) + len(right), [(round(line.box.x), round(line.box.y)) for line in texty]
+    for line in texty:
+        assert line.box.x + line.box.w < 820 or line.box.x > 820, f"line runs across the gutter: {line.box}"
+        assert line.box.h < 60, f"line box holds several lines: {line.box}"
