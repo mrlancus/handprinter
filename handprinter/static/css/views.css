@@ -311,9 +311,11 @@
 .ck-card--done { padding: var(--sp-2) var(--sp-3); background: var(--c-panel-sunken); }
 .ck-done { color: var(--c-accent); gap: var(--sp-2); }
 .ck-done__text { color: var(--c-text-muted); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ck-scroll { overflow-x: auto; background: var(--c-workspace); border-radius: var(--radius-sm); -webkit-overflow-scrolling: touch; }
-.ck-frame { position: relative; display: inline-block; vertical-align: top; }
-.ck-img { display: block; height: 80px; width: auto; max-width: none; user-select: none; }
+.ck-view { display: flex; align-items: flex-start; gap: var(--sp-2); flex-wrap: wrap; }
+.ck-scroll { position: relative; overflow: hidden; max-width: 100%; background: var(--c-workspace); border-radius: var(--radius-sm); transition: width 0.15s, height 0.15s; }
+.ck-frame { position: absolute; left: 0; top: 0; transition: left 0.15s, top 0.15s, width 0.15s, height 0.15s; }
+.ck-img { display: block; width: 100%; height: 100%; user-select: none; }
+.ck-toggle { flex: none; }
 .ck-box { position: absolute; padding: 0; margin: 0; background: transparent; border: 2px solid var(--c-region); border-radius: 2px; cursor: pointer; opacity: 0.85; }
 .ck-box--warn { border-color: var(--c-review-strong); border-width: 3px; background: rgba(194, 124, 14, 0.10); }
 .ck-box--empty { border-style: dashed; }

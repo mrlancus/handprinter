@@ -57,7 +57,7 @@ const isClean = (item) => !lineIssues(item).length && (item.words.length ? item.
 export async function render(root, params) {
   /** @type {{pages: any[], source: any, lines: LineItem[]}} */
   let data = { pages: [], source: null, lines: [] };
-  /** @type {Map<string, {card: HTMLElement, approve: (quiet?: boolean) => Promise<boolean>, focusFirst: () => void}>} */
+  /** @type {Map<string, {card: HTMLElement, approve: (quiet?: boolean) => Promise<boolean>, focusFirst: () => void, layout: () => void}>} */
   const cards = new Map();
   const body = h('div', { class: 'page-body ck' }, loadingState(3));
   const head = h('header', { class: 'page-head' });
@@ -113,27 +113,42 @@ export async function render(root, params) {
     /** @type {Map<string, {input: HTMLInputElement, box: HTMLElement}>} */
     const parts = new Map();
     const note = h('p', { class: 'xs ck-note', role: 'status' });
-    // A close-up of just the word being looked at, so a big or busy line never hides it.
-    const zoomImg = /** @type {HTMLImageElement} */ (h('img', { class: 'ck-zoom__img', alt: '' }));
-    const zoomText = h('span', { class: 'xs muted' });
-    const zoom = h('div', { class: 'ck-zoom', hidden: true }, zoomImg, zoomText);
     const preview = h('div', { class: 'ck-preview' });
 
-    // the line photo with each word box outlined
+    // The line photo with each word box outlined, shown through a window: by default the window
+    // is zoomed to the word that needs a look (with a little space around it), not the whole box.
     const frame = h('div', { class: 'ck-frame' });
     const img = h('img', { class: 'ck-img', src: `/api/regions/${line.id}/crop?rev=${line.revision}`, alt: `Line ${index + 1}`, draggable: 'false' });
     frame.appendChild(img);
-    // Fit the whole line to the card where that keeps the writing a readable size; very long lines scroll sideways.
     const scroller = h('div', { class: 'ck-scroll' }, frame);
-    const fitImg = () => {
-      const iw = /** @type {HTMLImageElement} */ (img).naturalWidth, ih = /** @type {HTMLImageElement} */ (img).naturalHeight;
-      if (!iw || !ih) return;
-      const avail = scroller.clientWidth || 600;
-      // a box that is far from a long thin line (a block, several lines) is shown taller so it stays legible
-      const max = iw / ih < 5 ? 280 : matchMedia('(pointer: coarse)').matches ? 120 : 104;
-      img.style.height = `${Math.round(Math.max(56, Math.min(max, ih, avail * ih / iw)))}px`;
-    };
-    img.addEventListener('load', fitImg);
+    const amber = words.filter((w) => wordIssues(w).length);
+    let wholeLine = !amber.length;
+    /** @type {Region | null} */
+    let focusWord = amber[0] || null;
+    const toggle = h('button', { class: 'btn btn--sm btn--quiet ck-toggle', type: 'button', hidden: !words.length || !amber.length,
+      onClick: () => { wholeLine = !wholeLine; layout(); } });
+
+    /** Window around a word, in the page's pixels, kept inside the line box. @param {Region} w */
+    function around(w) {
+      const padX = Math.max(2.5 * w.h, 0.6 * w.w), padY = 0.5 * w.h;
+      const x0 = Math.max(line.x, w.x - padX), x1 = Math.min(line.x + line.w, w.x + w.w + padX);
+      const y0 = Math.max(line.y, w.y - padY), y1 = Math.min(line.y + line.h, w.y + w.h + padY);
+      return { x: x0, y: y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0) };
+    }
+    function layout() {
+      const win = !wholeLine && focusWord ? around(focusWord) : { x: line.x, y: line.y, w: line.w, h: line.h };
+      const avail = scroller.parentElement ? (scroller.parentElement.clientWidth - 2) : 600;
+      const maxH = wholeLine ? (line.w / line.h < 5 ? 280 : 120) : 150;
+      const scale = Math.min(maxH / win.h, (avail || 600) / win.w, wholeLine ? 1 : 3);
+      scroller.style.width = `${Math.round(win.w * scale)}px`;
+      scroller.style.height = `${Math.round(win.h * scale)}px`;
+      frame.style.width = `${line.w * scale}px`;
+      frame.style.height = `${line.h * scale}px`;
+      frame.style.left = `${-(win.x - line.x) * scale}px`;
+      frame.style.top = `${-(win.y - line.y) * scale}px`;
+      toggle.replaceChildren(icon(wholeLine ? 'eye' : 'fit'), wholeLine ? 'Zoom to the word' : 'Show whole line');
+    }
+    requestAnimationFrame(layout);
     const pct = (/** @type {number} */ v) => `${Math.max(0, Math.min(100, v)).toFixed(3)}%`;
     for (const w of words) {
       const issues = wordIssues(w);
@@ -168,12 +183,9 @@ export async function render(root, params) {
       });
       input.addEventListener('focus', () => {
         part.box.classList.add('is-active');
-        part.box.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
         note.textContent = issues.length ? `This word: ${issues.join('; ')}.` : '';
-        zoomImg.src = `/api/regions/${w.id}/crop?rev=${w.revision}`;
-        zoomImg.alt = `Close-up of the word box for “${w.text || ''}”`;
-        zoomText.textContent = 'This word’s box, close up';
-        zoom.hidden = false;
+        // the photo follows the word you are on
+        if (focusWord !== w) { focusWord = w; if (!wholeLine) layout(); }
       });
       input.addEventListener('blur', () => { part.box.classList.remove('is-active'); });
       input.addEventListener('keydown', (e) => {
@@ -204,9 +216,9 @@ export async function render(root, params) {
     const issues = lineIssues(item);
     const approveBtn = h('button', { class: 'btn btn--primary', type: 'button', onClick: () => { approve(); } }, icon('check'), 'Approve line');
     const el = h('li', { class: `ck-card${isClean(item) ? '' : ' ck-card--warn'}`, dataset: { line: line.id } },
-      scroller,
+      h('div', { class: 'ck-view' }, scroller, toggle),
       issues.length ? h('p', { class: 'xs ck-issues', title: issues.join(' · ') }, icon('flag'), shorten(issues.join(' · '), 220)) : null,
-      chips, preview, zoom, note,
+      chips, preview, note,
       h('div', { class: 'row ck-actions' },
         approveBtn,
         h('button', { class: 'btn btn--quiet', type: 'button', title: 'Not usable: cut off, scribble, someone else’s writing', onClick: () => leaveOut() }, icon('x'), 'Leave line out'),
@@ -269,7 +281,7 @@ export async function render(root, params) {
       target.focus({ preventScroll: true });
       el.scrollIntoView({ block: 'center', behavior: 'smooth' });
     };
-    cards.set(line.id, { card: el, approve, focusFirst });
+    cards.set(line.id, { card: el, approve, focusFirst, layout });
     return el;
   }
 
@@ -305,5 +317,8 @@ export async function render(root, params) {
     if (left) cards.get(left.line.id)?.focusFirst();
   }
 
+  const relayout = () => { for (const c of cards.values()) c.layout(); };
+  window.addEventListener('resize', relayout);
   await load();
+  return () => window.removeEventListener('resize', relayout);
 }
