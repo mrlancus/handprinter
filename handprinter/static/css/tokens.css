@@ -1,6 +1,7 @@
 /* Handprinter design tokens — the single source for colour, type, spacing, borders and focus.
    Documented in docs/design-system.md. Components reference only these variables. */
 :root {
+  color-scheme: light;
   /* Surfaces */
   --c-canvas: #f4f1ea;          /* warm off-white page background */
   --c-panel: #ffffff;           /* crisp neutral panels */
@@ -25,7 +26,7 @@
   --c-error: #a8231b;
   --c-error-soft: #fbe7e4;
   --c-neutral-soft: #ece8df;
-  --c-region: #2f5b3a;          /* region outlines on images */
+  --c-region: #2f5b3a;          /* region outlines on images (same in dark mode: drawn on paper) */
   --c-region-selected: #1d1c19;
 
   /* Type */
@@ -72,6 +73,57 @@
   /* Motion */
   --dur-fast: 120ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* Dark mode: follows the device unless Settings → Appearance picks Light or Dark (data-theme).
+   Page photos and region outlines on them are not recoloured: the paper stays as photographed. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --c-canvas: #161614;
+      --c-panel: #1f1e1b;
+      --c-panel-sunken: #262521;
+      --c-workspace: #121210;
+      --c-border: #36342e;
+      --c-border-strong: #4d4a42;
+      --c-text: #ece8df;
+      --c-text-muted: #b2aca0;
+      --c-text-faint: #8f897d;
+      --c-text-inverse: #141412;
+      --c-accent: #84b88f;
+      --c-accent-hover: #9cc8a5;
+      --c-accent-soft: #233229;
+      --c-review: #e3a94f;
+      --c-review-strong: #e3a94f;
+      --c-review-soft: #3a2e1a;
+      --c-error: #f08b80;
+      --c-error-soft: #3d211e;
+      --c-neutral-soft: #2c2b27;
+      --shadow-pop: 0 6px 24px rgba(0, 0, 0, 0.5);
+  }
+}
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --c-canvas: #161614;
+    --c-panel: #1f1e1b;
+    --c-panel-sunken: #262521;
+    --c-workspace: #121210;
+    --c-border: #36342e;
+    --c-border-strong: #4d4a42;
+    --c-text: #ece8df;
+    --c-text-muted: #b2aca0;
+    --c-text-faint: #8f897d;
+    --c-text-inverse: #141412;
+    --c-accent: #84b88f;
+    --c-accent-hover: #9cc8a5;
+    --c-accent-soft: #233229;
+    --c-review: #e3a94f;
+    --c-review-strong: #e3a94f;
+    --c-review-soft: #3a2e1a;
+    --c-error: #f08b80;
+    --c-error-soft: #3d211e;
+    --c-neutral-soft: #2c2b27;
+    --shadow-pop: 0 6px 24px rgba(0, 0, 0, 0.5);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -19,10 +19,28 @@ export async function render(root) {
     try {
       const d = await api(`/api/doctor${refresh ? '?refresh=true' : ''}`);
       mount(body, h('div', { class: 'set-grid' },
-        machine(d), recognition(d), adapters(d), storage(d)));
+        appearance(), machine(d), recognition(d), adapters(d), storage(d)));
     } catch (err) { mount(body, errorState(err, () => load(true))); }
   }
   load();
+}
+
+/** Light / dark / follow the device. Stored per device (this browser only). */
+function appearance() {
+  let current = 'auto';
+  try { current = localStorage.getItem('hp-theme') || 'auto'; } catch { /* storage blocked */ }
+  /** @param {string} v */
+  const set = (v) => {
+    try { v === 'auto' ? localStorage.removeItem('hp-theme') : localStorage.setItem('hp-theme', v); } catch { /* storage blocked */ }
+    if (v === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', v);
+  };
+  return h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h2', { text: 'Appearance' })),
+    h('div', { class: 'panel__body stack' },
+      h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Theme' },
+        [['auto', 'Match device'], ['light', 'Light'], ['dark', 'Dark']].map(([v, label]) =>
+          h('label', {}, h('input', { type: 'radio', name: 'theme', value: v, checked: v === current ? true : undefined, onChange: () => set(v) }), h('span', { text: label })))),
+      h('p', { class: 'xs muted', text: 'Saved on this device. Page photos are never recoloured.' })));
 }
 
 /** @param {boolean} ok @param {string} label @param {string} [detail] */

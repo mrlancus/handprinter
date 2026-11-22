@@ -20,6 +20,13 @@ function setOnline(value) {
   connectionListeners.forEach((fn) => fn(value));
 }
 
+let redirecting = false;
+export function redirectToLogin() {
+  if (redirecting) return;
+  redirecting = true;
+  location.replace('/login');
+}
+
 /**
  * @param {string} path
  * @param {{method?: string, body?: any, raw?: boolean, signal?: AbortSignal}} [opts]
@@ -41,12 +48,21 @@ export async function api(path, opts = {}) {
     throw new ApiError('The Handprinter server is not reachable. Is it still running?', 0);
   }
   setOnline(true);
+  if (res.status === 401) {
+    // Signed out (online/LAN mode, or the password changed): go to the sign-in page once.
+    redirectToLogin();
+    throw new ApiError('Please sign in', 401);
+  }
   if (!res.ok) {
     let detail = res.statusText;
     try {
       const data = await res.json();
       detail = typeof data.detail === 'string' ? data.detail : (data.detail || []).map((/** @type {any} */ d) => `${(d.loc || []).slice(1).join('.')}: ${d.msg}`).join('; ');
     } catch { /* not JSON */ }
+    if (res.status === 403 && /request token/.test(detail)) {
+      // The app was restarted since this page loaded: reload to pick up the new token.
+      location.reload();
+    }
     throw new ApiError(detail || `Request failed (${res.status})`, res.status);
   }
   if (opts.raw) return res;
@@ -69,6 +85,7 @@ export function upload(path, file, onProgress, fields = {}) {
     xhr.onload = () => {
       let data = null;
       try { data = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      if (xhr.status === 401) redirectToLogin();
       if (xhr.status >= 200 && xhr.status < 300) resolve(data);
       else reject(new ApiError((data && data.detail) || `Upload failed (${xhr.status})`, xhr.status));
     };

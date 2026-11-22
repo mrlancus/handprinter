@@ -70,3 +70,10 @@ Weights are 400, 550 and 650.
 - The only motion is short colour transitions (`--dur-fast`) and skeleton shimmer. Both are disabled under `prefers-reduced-motion`.
 - Keyboard shortcuts never fire while focus is in an input, a select or a textarea (`isTyping()` in `dom.js`).
 - Canvas and SVG views always have equivalent controls outside them: the element list and numeric fields in Studio, and the inspector and shortcuts in Review.
+
+## Dark mode
+
+Dark values for every colour token live in `tokens.css`: they follow the device (`prefers-color-scheme`) unless
+Settings → Appearance sets `data-theme="light"` or `"dark"` on `<html>` (saved per device in `localStorage`,
+applied before paint by `static/js/theme.js`). Page photos, crops and the outlines drawn on them are not
+recoloured: the paper stays as photographed. The Studio page stays white because it is the paper being composed.
