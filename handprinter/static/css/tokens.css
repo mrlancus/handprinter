@@ -1,0 +1,79 @@
+/* Handprinter design tokens — the single source for colour, type, spacing, borders and focus.
+   Documented in docs/design-system.md. Components reference only these variables. */
+:root {
+  /* Surfaces */
+  --c-canvas: #f4f1ea;          /* warm off-white page background */
+  --c-panel: #ffffff;           /* crisp neutral panels */
+  --c-panel-sunken: #faf8f3;    /* inset areas, table stripes */
+  --c-workspace: #e9e5dc;       /* behind handwriting images */
+  --c-border: #d9d3c7;
+  --c-border-strong: #b9b1a2;
+
+  /* Text */
+  --c-text: #1d1c19;            /* near-black */
+  --c-text-muted: #5c584f;
+  --c-text-faint: #7a756a;
+  --c-text-inverse: #ffffff;
+
+  /* Meaning: one accent for primary actions; amber = review; red = error; all else neutral */
+  --c-accent: #2f5b3a;          /* forest */
+  --c-accent-hover: #244a2e;
+  --c-accent-soft: #e4ece2;
+  --c-review: #9a5b00;          /* amber text/icon (AA on panel) */
+  --c-review-strong: #c27c0e;   /* amber strokes on images */
+  --c-review-soft: #fbefd9;
+  --c-error: #a8231b;
+  --c-error-soft: #fbe7e4;
+  --c-neutral-soft: #ece8df;
+  --c-region: #2f5b3a;          /* region outlines on images */
+  --c-region-selected: #1d1c19;
+
+  /* Type */
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  --fs-xs: 0.75rem;   /* 12 */
+  --fs-sm: 0.8125rem; /* 13 */
+  --fs-md: 0.875rem;  /* 14 base UI */
+  --fs-lg: 1rem;      /* 16 */
+  --fs-xl: 1.25rem;   /* 20 */
+  --fs-2xl: 1.625rem; /* 26 page titles */
+  --lh-tight: 1.25;
+  --lh-normal: 1.5;
+  --fw-regular: 400;
+  --fw-medium: 550;
+  --fw-bold: 650;
+
+  /* Spacing rhythm (4 px base) */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+
+  /* Borders, radii, elevation */
+  --bw: 1px;
+  --radius-sm: 3px;
+  --radius-md: 5px;
+  --shadow-pop: 0 6px 24px rgba(29, 28, 25, 0.14);  /* only for menus/popovers */
+
+  /* Focus */
+  --focus-ring: 0 0 0 2px var(--c-panel), 0 0 0 4px var(--c-accent);
+
+  /* Controls */
+  --control-h: 32px;
+  --control-h-touch: 44px;
+  --rail-w: 76px;
+  --inspector-w: 360px;
+  --queue-w: 280px;
+
+  /* Motion */
+  --dur-fast: 120ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-fast: 0ms; }
+}

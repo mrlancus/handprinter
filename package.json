@@ -1,0 +1,11 @@
+{
+  "name": "handprinter-frontend-checks",
+  "private": true,
+  "description": "Dev-only type checking for the browser ES modules (never needed to launch the app).",
+  "scripts": {
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "typescript": "6.0.2"
+  }
+}

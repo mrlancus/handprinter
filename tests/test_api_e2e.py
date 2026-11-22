@@ -43,7 +43,7 @@ def client(settings):
 def test_state_changing_requests_need_token_same_origin_and_host(settings):
     raw = TestClient(create_app(settings, extra_hosts={"testserver"}))
     assert raw.post("/api/batches", json={}).status_code == 403
-    token = re.search(r'content="([^"]+)"', raw.get("/").text).group(1)
+    token = re.search(r'name="hp-token" content="([^"]+)"', raw.get("/").text).group(1)
     hdr = {"x-handprinter-token": token}
     assert raw.post("/api/batches", json={}, headers={**hdr, "origin": "http://evil.example"}).status_code == 403
     assert raw.post("/api/batches", json={}, headers={**hdr, "host": "evil.example"}).status_code == 400

@@ -110,7 +110,7 @@ def run_detection(conn: sqlite3.Connection, store: Store, source_id: str, replac
         elif existing:
             return {"skipped": True, "reason": "detector proposals already exist; use replace to re-run", **created}
         for ruling in result.rulings:
-            review.create_region(conn, source, "block", ruling, actor="detector", cls="printed_ruling", flags=["detector_class_guess"])
+            review.create_region(conn, source, "block", ruling, actor="detector", cls="printed_ruling")
             created["rulings"] += 1
         for line in result.lines:
             flags = ["ruling_overlap"] if line.overlaps_ruling else []
