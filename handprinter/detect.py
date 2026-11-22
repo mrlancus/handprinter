@@ -21,6 +21,9 @@ class DetectedLine:
     box: Box
     words: list[Box]
     overlaps_ruling: bool
+    may_hold_several: bool = False  # tall band that could not be split cleanly into lines
+    touches_neighbour: bool = False  # split from a line whose strokes touch this one
+    words_at_edge: frozenset[int] = frozenset()  # indexes of words that run off the photo edge
 
 
 @dataclass
@@ -104,6 +107,7 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
     profile = _smooth(clean.sum(axis=1).astype(float), max(1, h // 300))
     threshold = max(1.0, 0.04 * float(profile.max(initial=0)))
     bands = _merge_runs(_runs(profile > threshold, min_len=max(3, h // 200)), max_gap=max(2, h // 250))
+    bands, band_notes = split_touching_bands(bands, profile)
 
     lines: list[DetectedLine] = []
     for index, (y0, y1) in enumerate(bands):
@@ -131,7 +135,10 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
         for wb in words[1:]:
             line_box = line_box.union(wb)
         overlaps = any(line_box.intersection_area(r.pad(2)) > 0 for r in rulings)
-        lines.append(DetectedLine(line_box, words, overlaps))
+        edge = 2  # px at work scale: writing that runs to the photo edge is probably cut off
+        at_edge = frozenset(i for i, wb in enumerate(words) if wb.x <= edge or wb.x + wb.w >= w - edge or wb.y <= edge or wb.y + wb.h >= h - edge)
+        note = band_notes.get((y0, y1), "")
+        lines.append(DetectedLine(line_box, words, overlaps, note == "unsplit", note == "split", at_edge))
 
     inv = 1 / scale
     pad = 4 * inv
@@ -140,10 +147,52 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
         return Box(b.x * inv - pad, b.y * inv - pad, b.w * inv + 2 * pad, b.h * inv + 2 * pad).clamp(img.width, img.height)
 
     return Detection(
-        lines=[DetectedLine(up(line.box), [up(wb) for wb in line.words], line.overlaps_ruling) for line in lines],
+        lines=[DetectedLine(up(line.box), [up(wb) for wb in line.words], line.overlaps_ruling, line.may_hold_several,
+                            line.touches_neighbour, line.words_at_edge) for line in lines],
         rulings=[Box(0, r.y * inv, img.width, max(1.0, r.h * inv)) for r in rulings]
         + [Box(r.x * inv, 0, max(1.0, r.w * inv), img.height) for r in vertical_rulings],
     )
+
+
+def split_touching_bands(bands: list[tuple[int, int]], profile: np.ndarray) -> tuple[list[tuple[int, int]], dict[tuple[int, int], str]]:
+    """Split bands that are much taller than the page's typical line: lines whose tails touch merge into one band.
+
+    Each tall band is cut into round(height / typical) lines at the emptiest row near each expected
+    boundary. Returns the new bands and notes: "split" for parts of a cut band, "unsplit" for a tall
+    band with no clear place to cut (so a person checks it).
+    """
+    notes: dict[tuple[int, int], str] = {}
+    if len(bands) < 3:
+        return bands, notes
+    typical = float(np.median([b - a for a, b in bands]))
+    out: list[tuple[int, int]] = []
+    for a, b in bands:
+        height = b - a
+        k = round(height / typical) if typical > 0 else 1
+        if height < 1.6 * typical or k < 2:
+            out.append((a, b))
+            continue
+        inside = profile[a:b]
+        busy = float(np.median(inside)) or 1.0
+        cuts, clean_cuts = [], True
+        for j in range(1, k):
+            centre = a + round(j * height / k)
+            lo, hi = max(a + 1, centre - round(0.35 * typical)), min(b - 1, centre + round(0.35 * typical))
+            if hi <= lo:
+                clean_cuts = False
+                break
+            y = lo + int(np.argmin(profile[lo:hi]))
+            clean_cuts = clean_cuts and profile[y] < 0.35 * busy
+            cuts.append(y)
+        if not cuts or not clean_cuts:
+            out.append((a, b))
+            notes[(a, b)] = "unsplit"
+            continue
+        edges = [a, *cuts, b]
+        for top, bottom in zip(edges, edges[1:]):
+            out.append((top, bottom))
+            notes[(top, bottom)] = "split"
+    return out, notes
 
 
 def vertical_rule_columns(mask: np.ndarray, min_run: float = 0.15) -> np.ndarray:

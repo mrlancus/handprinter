@@ -110,3 +110,35 @@ def test_boxes_a_person_touched_are_never_recut(conn, store, settings, fixture_s
     assert summary["lines_refit"] == 0
     assert {w["id"]: (w["x"], w["w"]) for w in _words(conn, line["id"])} == before
     assert "alignment_ambiguous" in review.get_region(conn, line["id"])["flags"]
+
+
+def _hand_page(rows: list[tuple[int, int, str]], size=(1200, 900)) -> Image.Image:
+    img = Image.new("RGB", size, (246, 243, 236))
+    draw = ImageDraw.Draw(img)
+    for x, y, text in rows:
+        draw.text((x, y), text, fill=(35, 38, 60), font=_font(44))
+    return img
+
+
+def _three_then(*rows):
+    return _hand_page([(90, 80, "first line here"), (90, 230, "second line here"), (90, 380, "third line here"), *rows])
+
+
+def test_touching_lines_are_split_and_flagged():
+    # tails of the fourth line (j, p, y, q, g) reach the capitals of the fifth: one ink band
+    found = detect.detect_layout(_three_then((90, 530, "jumpy quay gyp"), (90, 578, "Hold The Bell")))
+    assert len(found.lines) == 5, [line.box for line in found.lines]
+    fourth, fifth = found.lines[3], found.lines[4]
+    assert fourth.touches_neighbour and fifth.touches_neighbour and not fourth.may_hold_several
+    assert fourth.box.y < fifth.box.y and fifth.box.y + fifth.box.h > 610
+
+
+def test_overlapping_lines_that_cannot_be_cut_are_flagged_for_a_person():
+    found = detect.detect_layout(_three_then((90, 530, "jumpy quay gyp"), (90, 566, "Hold The Bell")))
+    assert len(found.lines) == 4 and found.lines[3].may_hold_several
+
+
+def test_words_running_off_the_photo_are_flagged():
+    found = detect.detect_layout(_hand_page([(90, 80, "stays inside"), (90, 230, "goes right off the page"), (90, 380, "inside again")], size=(560, 900)))
+    edge_lines = [line for line in found.lines if line.words_at_edge]
+    assert len(edge_lines) == 1 and edge_lines[0].box.y > 200

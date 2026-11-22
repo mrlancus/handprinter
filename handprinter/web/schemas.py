@@ -74,7 +74,8 @@ class RevisionIn(BaseModel):
 
 
 class SplitIn(BaseModel):
-    at_x: float
+    at_x: float | None = None
+    at_y: float | None = None  # split top/bottom instead (a box holding two lines of writing)
     texts: tuple[str | None, str | None] = (None, None)
 
 

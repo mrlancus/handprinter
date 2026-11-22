@@ -347,6 +347,10 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
 
     @app.post("/api/regions/{region_id}/split")
     def split(region_id: str, body: S.SplitIn, conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
+        if (body.at_x is None) == (body.at_y is None):
+            raise review.ReviewError("give either at_x (side by side) or at_y (top and bottom)")
+        if body.at_y is not None:
+            return review.split_region_rows(conn, region_id, body.at_y)
         return review.split_region(conn, region_id, body.at_x, body.texts)
 
     @app.post("/api/regions/merge")

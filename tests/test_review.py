@@ -126,3 +126,18 @@ def test_undo_does_not_revive_a_split_region(conn, region):
     review.split_region(conn, region["id"], 120)
     with pytest.raises(review.ReviewError, match="split or merged"):
         review.undo(conn, region["id"])
+
+
+def test_split_into_two_lines_moves_each_word_to_its_line(conn, store, fixture_source):
+    from handprinter import pages
+    from handprinter.geometry import Box
+    sid = fixture_source()
+    src = pages.get_source(conn, sid)
+    line = review.create_region(conn, src, "line", Box(80, 100, 600, 200), actor="human")
+    upper = review.create_region(conn, src, "word", Box(90, 110, 80, 60), actor="human", parent_id=line["id"])
+    lower = review.create_region(conn, src, "word", Box(90, 220, 80, 60), actor="human", parent_id=line["id"])
+    top, bottom = review.split_region_rows(conn, line["id"], 200)
+    assert (top["y"], top["h"], bottom["y"], bottom["h"]) == (100, 100, 200, 100)
+    assert review.get_region(conn, upper["id"])["parent_id"] == top["id"]
+    assert review.get_region(conn, lower["id"])["parent_id"] == bottom["id"]
+    assert review.get_region(conn, line["id"])["deleted"] == 1

@@ -121,13 +121,20 @@ def run_detection(conn: sqlite3.Connection, store: Store, source_id: str, replac
             created["rulings"] += 1
         for line in result.lines:
             flags = ["ruling_overlap"] if line.overlaps_ruling else []
+            if line.touches_neighbour:
+                flags.append("lines_touching")
             if overlaps_kept(line.box):
                 created["skipped_overlapping"] += 1
                 continue
-            line_region = review.create_region(conn, source, "line", line.box, actor="detector", flags=flags)
+            line_flags = flags + (["may_be_several_lines"] if line.may_hold_several else [])
+            reason = "this box may hold more than one line of writing; split it if so" if line.may_hold_several else None
+            line_region = review.create_region(conn, source, "line", line.box, actor="detector", flags=line_flags, review_reason=reason)
             created["lines"] += 1
-            for wbox in line.words:
-                review.create_region(conn, source, "word", wbox, actor="detector", parent_id=line_region["id"], flags=flags)
+            for index, wbox in enumerate(line.words):
+                at_edge = index in line.words_at_edge
+                review.create_region(conn, source, "word", wbox, actor="detector", parent_id=line_region["id"],
+                                     flags=flags + (["runs_off_edge"] if at_edge else []),
+                                     review_reason="touches the edge of the photo; keep it only if the whole word is visible" if at_edge else None)
                 created["words"] += 1
         conn.execute("UPDATE sources SET detection_status = 'done' WHERE id = ?", (source_id,))
     return created

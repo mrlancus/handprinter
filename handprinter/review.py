@@ -304,6 +304,30 @@ def split_region(conn: sqlite3.Connection, region_id: str, at_x: float, texts: t
         return parts
 
 
+def split_region_rows(conn: sqlite3.Connection, region_id: str, at_y: float) -> list[dict[str, Any]]:
+    """Split a region into a top and a bottom part at processed-frame y (two lines in one box).
+
+    Child regions (words, marks) move to the part holding their centre. Text is cleared: it
+    belonged to the combined box.
+    """
+    with transaction(conn):
+        region = _load_for_edit(conn, region_id, None)
+        if not region["y"] + 1 <= at_y <= region["y"] + region["h"] - 1:
+            raise ReviewError("split position must fall inside the region")
+        source = _source(conn, region["source_id"])
+        top = Box(region["x"], region["y"], region["w"], at_y - region["y"])
+        bottom = Box(region["x"], at_y, region["w"], region["y"] + region["h"] - at_y)
+        parts = [
+            create_region(conn, source, region["kind"], b, actor="human", cls=region["cls"], parent_id=region["parent_id"],
+                          status="needs_review", action=f"split_from:{region_id}")
+            for b in (top, bottom)
+        ]
+        _write(conn, region, {"deleted": 1}, "human", f"split_into:{parts[0]['id']},{parts[1]['id']}")
+        conn.execute("UPDATE regions SET parent_id = ? WHERE parent_id = ? AND deleted = 0 AND y + h / 2.0 < ?", (parts[0]["id"], region_id, at_y))
+        conn.execute("UPDATE regions SET parent_id = ? WHERE parent_id = ? AND deleted = 0", (parts[1]["id"], region_id))
+        return parts
+
+
 def merge_regions(conn: sqlite3.Connection, region_ids: list[str], text: str | None = None) -> dict[str, Any]:
     if len(region_ids) < 2:
         raise ReviewError("select at least two regions to merge")

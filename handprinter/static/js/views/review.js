@@ -596,6 +596,7 @@ export async function render(root, params) {
         icon('person'), 'Someone else’s handwriting (never enters your dataset)'),
       h('div', { class: 'row' },
         h('button', { class: 'btn btn--sm', type: 'button', onClick: () => split(r) }, icon('split'), 'Split in half'),
+        r.kind === 'line' || r.kind === 'block' ? h('button', { class: 'btn btn--sm', type: 'button', title: 'For a box that holds two lines of writing', onClick: () => splitRows(r) }, icon('split'), 'Split into two lines') : null,
         h('button', { class: 'btn btn--sm', type: 'button', disabled: state.multi.size < 2, title: 'Shift-click outlines to select several', onClick: merge }, icon('merge'), state.multi.size >= 2 ? `Merge ${state.multi.size}` : COARSE ? 'Merge (Select several first)' : 'Merge (shift-click)'),
         h('button', { class: 'btn btn--sm btn--quiet btn--danger', type: 'button', onClick: () => remove(r) }, icon('trash'), 'Delete')),
       isMark ? markPanel(r) : null,
@@ -704,6 +705,16 @@ export async function render(root, params) {
       upsert({ ...r, deleted: 1 }); parts.forEach(upsert);
       setSave('saved'); select(parts[0].id);
       toast('Split in half. Drag the edges to fit each part.');
+    } catch (err) { setSave('error', err instanceof Error ? err.message : String(err)); }
+  }
+
+  /** @param {Region} r */
+  async function splitRows(r) {
+    try {
+      const parts = await api(`/api/regions/${r.id}/split`, { body: { at_y: r.y + r.h / 2 } });
+      upsert({ ...r, deleted: 1 }); parts.forEach(upsert);
+      setSave('saved'); select(parts[0].id);
+      toast('Split into a top and a bottom line. Drag the edges so each holds one line; its words moved with it.');
     } catch (err) { setSave('error', err instanceof Error ? err.message : String(err)); }
   }
 
