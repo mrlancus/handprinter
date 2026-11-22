@@ -10,7 +10,7 @@ Everything runs and is stored on your computer. The only exception is images you
 
 ## Use it from an iPad or phone
 
-Run `scripts\online.bat` instead of `run.bat`: it publishes the app through a free Cloudflare Tunnel behind a password. Step by step: [docs/online.md](docs/online.md).
+Double-click `Handprinter.bat`: it updates the code, installs anything missing and starts the app online. Or run `scripts\online.bat` instead of `run.bat`: it publishes the app through a free Cloudflare Tunnel behind a password. Step by step: [docs/online.md](docs/online.md).
 
 ## Quick start
 

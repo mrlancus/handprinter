@@ -7,6 +7,10 @@ encrypted traffic. The PC must be on, with the online window open, while you use
 
 ## Start it (Windows)
 
+**One click:** double-click `Handprinter.bat` in the `handprinter` folder. It pulls the latest
+code, installs or updates whatever is missing, and starts the app online. (`Handprinter.bat local`
+starts it for this PC only.) The steps it performs:
+
 1. Double-click `scripts\online.bat`. The first time it installs `cloudflared` with winget (say yes
    if Windows asks). If it says cloudflared was just installed but is not found, close the window
    and double-click it again.
