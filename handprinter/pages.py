@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from typing import Any
 
@@ -245,11 +246,14 @@ def paint_omitted(img: Image.Image, context: Box, areas: list[Box], fill: tuple[
     out = img.copy()
     draw = ImageDraw.Draw(out)
     for a in areas:
-        x0, y0 = (a.x - context.x) * sx, (a.y - context.y) * sy
-        x1, y1 = (a.x + a.w - context.x) * sx, (a.y + a.h - context.y) * sy
-        if x1 <= 0 or y1 <= 0 or x0 >= out.width or y0 >= out.height:
+        # whole pixels, clipped to the image; an area that only grazes the edge (under a pixel) covers nothing
+        x0 = max(0, math.floor((a.x - context.x) * sx))
+        y0 = max(0, math.floor((a.y - context.y) * sy))
+        x1 = min(out.width, math.ceil((a.x + a.w - context.x) * sx))
+        y1 = min(out.height, math.ceil((a.y + a.h - context.y) * sy))
+        if x1 <= x0 or y1 <= y0:
             continue
-        draw.rectangle([max(0, x0), max(0, y0), min(out.width, x1) - 1, min(out.height, y1) - 1], fill=fill)
+        draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=fill)
     return out
 
 

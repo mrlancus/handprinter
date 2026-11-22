@@ -84,3 +84,15 @@ def test_omitted_areas_are_blanked_in_recognition_images_and_kept_out_of_export(
 
     examples, _ = dataset.eligible_examples(conn, "include_unreviewed", dataset.Filters())
     assert all(e["id"] not in {w["id"] for w in _words(conn, sid) if w["parent_id"] == line["id"]} for e in examples)
+
+
+def test_paint_omitted_survives_areas_that_only_graze_the_image():
+    from PIL import Image
+    from handprinter.geometry import Box
+    img = Image.new("RGB", (100, 40), (255, 255, 255))
+    context = Box(10, 10, 100, 40)
+    grazing = [Box(10, 49.6, 50, 5), Box(109.7, 10, 5, 20), Box(0, 0, 10.2, 10.3), Box(30, 20, 20, 0.4), Box(200, 200, 5, 5)]
+    out = pages.paint_omitted(img, context, grazing)
+    assert out.size == img.size
+    inside = pages.paint_omitted(img, context, [Box(20, 20, 10, 10)])
+    assert inside.getpixel((15, 15)) != (255, 255, 255)
