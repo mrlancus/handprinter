@@ -96,3 +96,16 @@ def test_paint_omitted_survives_areas_that_only_graze_the_image():
     assert out.size == img.size
     inside = pages.paint_omitted(img, context, [Box(20, 20, 10, 10)])
     assert inside.getpixel((15, 15)) != (255, 255, 255)
+
+
+def test_omit_on_all_pages_of_the_same_size(conn, store, fixture_source):
+    a, b, c = fixture_source(), fixture_source(shift=7), fixture_source(shift=14)
+    for sid in (a, b, c):
+        pages.run_detection(conn, store, sid)
+    pages.apply_processing(conn, store, c, {"rotation": 1.5})  # corrected page: same numbers, different place
+    src = pages.get_source(conn, a)
+    bar = Box(0, 0, 1200, 60)
+    pages.omit_area(conn, a, bar, "other", src["processing_rev"])
+    assert pages.omit_on_same_size_pages(conn, a, bar, "other") == 1
+    assert len(pages.omitted_areas(conn, b)) == 1 and len(pages.omitted_areas(conn, c)) == 0
+    assert pages.omit_on_same_size_pages(conn, a, bar, "other") == 0  # already there: not added twice

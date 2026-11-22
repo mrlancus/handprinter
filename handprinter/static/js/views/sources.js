@@ -499,14 +499,17 @@ async function renderPage(root, sourceId) {
       h('div', { class: 'stack' },
         h('p', { class: 'small', text: 'Nothing inside it will be used: detection ignores it, it is blanked out before any image is sent for recognition, and boxes mostly inside it are excluded from training. Approved words are kept. You can restore it at any time.' }),
         picker,
+        h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'omit-all' }),
+          'Also leave this out on all my other pages of the same size (for an app’s toolbar on screenshots)'),
         h('div', { class: 'row' }, h('span', { class: 'spacer' }),
           h('button', { class: 'btn', type: 'button', onClick: () => dialog.close() }, 'Cancel'),
           h('button', { class: 'btn btn--primary', type: 'button', onClick: async () => {
             const reason = /** @type {HTMLInputElement} */ (picker.querySelector('input:checked')).value;
             try {
-              const r = await api(`/api/sources/${sourceId}/omit`, { body: { processing_rev: src.processing_rev, box, reason } });
+              const all = /** @type {HTMLInputElement} */ (dialog.querySelector('input[name=omit-all]')).checked;
+              const r = await api(`/api/sources/${sourceId}/omit`, { body: { processing_rev: src.processing_rev, box, reason, same_size_pages: all } });
               done = true; dialog.close();
-              toast(`Area omitted. ${r.excluded} box(es) inside it excluded${r.kept_approved ? `; ${r.kept_approved} approved word(s) kept as you decided` : ''}.`);
+              toast(`Area omitted. ${r.excluded} box(es) inside it excluded${r.kept_approved ? `; ${r.kept_approved} approved word(s) kept as you decided` : ''}${all ? `; also omitted on ${r.other_pages} other page${r.other_pages === 1 ? '' : 's'}` : ''}.`);
               loadAnalysis();
             } catch (err) { toast(err instanceof Error ? err.message : String(err), 'error'); }
           } }, 'Omit area'))));

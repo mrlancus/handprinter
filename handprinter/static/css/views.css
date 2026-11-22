@@ -346,3 +346,4 @@
 .ck-zoom { display: flex; align-items: flex-end; gap: var(--sp-2); }
 .ck-zoom[hidden] { display: none; }
 .ck-zoom__img { height: 96px; width: auto; max-width: 100%; object-fit: contain; object-position: left; background: var(--c-workspace); border: 2px solid var(--c-region-selected); border-radius: var(--radius-sm); }
+.rg-dim { fill: rgba(20, 20, 18, 0.55); pointer-events: none; }

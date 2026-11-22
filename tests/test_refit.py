@@ -174,3 +174,15 @@ def test_columns_are_found_before_lines():
     for line in texty:
         assert line.box.x + line.box.w < 820 or line.box.x > 820, f"line runs across the gutter: {line.box}"
         assert line.box.h < 60, f"line box holds several lines: {line.box}"
+
+
+def test_app_toolbar_on_a_dark_bar_is_not_writing():
+    img = page(["first line here", "second line here", "third line here"], ruling=False)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 0, img.width, 70], fill=(40, 60, 110))  # an app's dark title bar
+    for x in range(40, 1100, 120):  # with icons and tab labels on it
+        draw.rectangle([x, 20, x + 40, 50], outline=(200, 210, 230), width=3)
+        draw.text((x + 50, 22), "Tab", fill=(220, 225, 235), font=_font(22))
+    found = detect.detect_layout(img)
+    assert all(line.box.y > 70 for line in found.lines), [line.box for line in found.lines]
+    assert len(found.lines) == 3

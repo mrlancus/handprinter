@@ -40,6 +40,7 @@ class OmitIn(BaseModel):
     processing_rev: int
     box: BoxIn
     reason: Literal["diagram", "printed", "other_author", "scribble", "other"] = "diagram"
+    same_size_pages: bool = False  # also omit it on every other uncorrected page of exactly this size
 
 
 class DetectIn(BaseModel):

@@ -262,7 +262,11 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
 
     @app.post("/api/sources/{source_id}/omit")
     def omit_area(source_id: str, body: S.OmitIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
-        return pages.omit_area(conn, source_id, Box(**body.box.model_dump()), body.reason, body.processing_rev)
+        box = Box(**body.box.model_dump())
+        out = pages.omit_area(conn, source_id, box, body.reason, body.processing_rev)
+        if body.same_size_pages:
+            out["other_pages"] = pages.omit_on_same_size_pages(conn, source_id, box, body.reason)
+        return out
 
     @app.delete("/api/sources/{source_id}/omit/{area_id}")
     def restore_area(source_id: str, area_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:

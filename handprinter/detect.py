@@ -79,7 +79,13 @@ def ink_mask(gray: np.ndarray) -> np.ndarray:
     img = Image.fromarray(gray.astype(np.uint8), "L")
     radius = max(6, max(gray.shape) // 60)
     local = np.asarray(img.filter(ImageFilter.BoxBlur(radius)), dtype=np.float32)
-    return (gray < local - 18) & (gray < 215)
+    # Writing sits on light paper or a light page: marks on a dark surround (app toolbars, coloured bars,
+    # the desk around the paper) are not handwriting.
+    # judged over a wide area, so dense or heavy handwriting never counts as a dark background
+    wide = np.asarray(img.filter(ImageFilter.BoxBlur(radius * 3)), dtype=np.float32)
+    dark = Image.fromarray(((wide <= 120) * 255).astype(np.uint8), "L").filter(ImageFilter.BoxBlur(radius))
+    near_dark = np.asarray(dark) > 0  # the dark area plus a margin, so its edge is not read as a stroke
+    return (gray < local - 18) & (gray < 215) & ~near_dark
 
 
 def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:

@@ -241,7 +241,8 @@ export async function render(root, params) {
       setImage();
       mount(wsEl, toolbar, container, note);
       drawToolbar();
-      requestAnimationFrame(() => { fit(); draw(); });
+      // zoom straight to the box being reviewed; the whole page only when nothing is selected
+      requestAnimationFrame(() => { const r = current(); if (r) focus(r); else fit(); draw(); });
     }
 
     function setImage() {
@@ -315,6 +316,13 @@ export async function render(root, params) {
         else if (r.cls !== 'handwriting') cls.push('rg--nonhand');
         const rect = svg('rect', { x: r.x, y: r.y, width: r.w, height: r.h, class: cls.join(' '), 'data-id': r.id });
         nodes.push(rect);
+      }
+      // Dim everything outside the selected box so only the part under review stands out.
+      const sel = current();
+      if (sel && state.tool === 'select' && !state.multi.size) {
+        const W = state.page.processed_w, H = state.page.processed_h;
+        nodes.unshift(svg('path', { class: 'rg-dim', 'fill-rule': 'evenodd',
+          d: `M0 0H${W}V${H}H0Z M${sel.x} ${sel.y}V${sel.y + sel.h}H${sel.x + sel.w}V${sel.y}Z` }));
       }
       mount(overlay, ...nodes);
       drawHandles();

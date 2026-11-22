@@ -176,6 +176,30 @@ def omitted_boxes(conn: sqlite3.Connection, source_id: str) -> list[Box]:
     return [Box(r["x"], r["y"], r["w"], r["h"]) for r in omitted_areas(conn, source_id)]
 
 
+def omit_on_same_size_pages(conn: sqlite3.Connection, source_id: str, box: Box, reason: str) -> int:
+    """Omit the same area on every other page of exactly this size with no geometry correction.
+
+    For screenshots from one app, whose toolbars sit in the same place on every page. Pages that were
+    rotated or perspective-corrected are skipped: the same numbers would not mean the same place.
+    """
+    src = get_source(conn, source_id)
+    if {k for k in src["processing"] if k != "lighting"}:
+        return 0
+    done = 0
+    for row in conn.execute(
+        "SELECT id FROM sources WHERE deleted = 0 AND id != ? AND original_w = ? AND original_h = ? AND processed_w = ? AND processed_h = ?",
+        (source_id, src["original_w"], src["original_h"], src["processed_w"], src["processed_h"])).fetchall():
+        other = get_source(conn, row["id"])
+        if {k for k in other["processing"] if k != "lighting"}:
+            continue
+        already = [Box(a["x"], a["y"], a["w"], a["h"]) for a in omitted_areas(conn, other["id"])]
+        if any(abs(a.x - box.x) < 2 and abs(a.y - box.y) < 2 and abs(a.w - box.w) < 2 and abs(a.h - box.h) < 2 for a in already):
+            continue
+        omit_area(conn, other["id"], box, reason, other["processing_rev"])
+        done += 1
+    return done
+
+
 def omit_area(conn: sqlite3.Connection, source_id: str, box: Box, reason: str, processing_rev: int | None) -> dict[str, Any]:
     """Mark an area of the page as not-for-use and exclude the regions that lie mostly inside it.
 
