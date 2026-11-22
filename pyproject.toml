@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "handprinter"
+version = "0.1.0"
+description = "Local handwriting dataset and generation studio"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn>=0.27",
+  "python-multipart>=0.0.9",
+  "pydantic>=2.6",
+  "pillow>=10.2",
+  "numpy>=1.26",
+  "jsonschema>=4.21",
+]
+
+[project.optional-dependencies]
+heic = ["pillow-heif>=0.16"]
+pdf = ["pypdfium2>=4.28"]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+handprinter = "handprinter.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["handprinter*"]
+
+[tool.setuptools.package-data]
+handprinter = ["static/**/*", "recognition/*.json", "schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
