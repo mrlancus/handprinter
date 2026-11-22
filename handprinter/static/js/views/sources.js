@@ -289,7 +289,7 @@ function recognitionTab(status) {
       const job = await trackJob(job_id);
       if (job.status === 'succeeded') {
         const r = job.result.import || job.result;
-        toast(`${jobLabel(job.kind)}: ${r.imported ?? 0} imported, ${r.pending ?? 0} pending, ${r.failed ?? 0} failed${r.protected_human_edits ? `, ${r.protected_human_edits} human edits kept` : ''}`);
+        toast(`${jobLabel(job.kind)}: ${r.imported ?? 0} imported, ${r.pending ?? 0} pending, ${r.failed ?? 0} failed${r.lines_refit ? `, word boxes re-cut on ${r.lines_refit} line${r.lines_refit === 1 ? '' : 's'}` : ''}${r.protected_human_edits ? `, ${r.protected_human_edits} human edits kept` : ''}`);
       } else toast(`${jobLabel(job.kind)} failed: ${job.error}`, 'error');
       window.dispatchEvent(new CustomEvent('hp:changed'));
       load();

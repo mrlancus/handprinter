@@ -96,13 +96,21 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
     rulings = [Box(0, y0, w, y1 - y0) for y0, y1 in _runs(ruling_rows, min_len=1)]
     clean = mask.copy()
     clean[ruling_rows] = False
+    # Margin lines, table borders and other long vertical rules: ink in most of a column's height.
+    vertical = vertical_rule_columns(clean)
+    clean[:, vertical] = False
+    vertical_rulings = [Box(x0, 0, x1 - x0, h) for x0, x1 in _runs(vertical, min_len=1)]
 
     profile = _smooth(clean.sum(axis=1).astype(float), max(1, h // 300))
     threshold = max(1.0, 0.04 * float(profile.max(initial=0)))
     bands = _merge_runs(_runs(profile > threshold, min_len=max(3, h // 200)), max_gap=max(2, h // 250))
 
     lines: list[DetectedLine] = []
-    for y0, y1 in bands:
+    for index, (y0, y1) in enumerate(bands):
+        # Tails and loops (g, y, f, capitals) are often too thin to count towards the band itself:
+        # words may grow into the space halfway to the neighbouring lines to keep them whole.
+        lo = 0 if index == 0 else (bands[index - 1][1] + y0) // 2
+        hi = h if index == len(bands) - 1 else (y1 + bands[index + 1][0]) // 2
         band = clean[y0:y1]
         cols = band.any(axis=0)
         if cols.sum() < 3:
@@ -115,7 +123,8 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
             ys_ink = np.nonzero(band[:, x0:x1].any(axis=1))[0]
             if len(ys_ink) == 0 or (x1 - x0) * len(ys_ink) < 12:
                 continue
-            words.append(Box(x0, y0 + ys_ink[0], x1 - x0, ys_ink[-1] - ys_ink[0] + 1))
+            top, bottom = _grow_vertically(clean, ruling_rows, x0, x1, y0 + int(ys_ink[0]), y0 + int(ys_ink[-1]) + 1, lo, hi)
+            words.append(Box(x0, top, x1 - x0, bottom - top))
         if not words:
             continue
         line_box = words[0]
@@ -132,8 +141,52 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
 
     return Detection(
         lines=[DetectedLine(up(line.box), [up(wb) for wb in line.words], line.overlaps_ruling) for line in lines],
-        rulings=[Box(0, r.y * inv, img.width, max(1.0, r.h * inv)) for r in rulings],
+        rulings=[Box(0, r.y * inv, img.width, max(1.0, r.h * inv)) for r in rulings]
+        + [Box(r.x * inv, 0, max(1.0, r.w * inv), img.height) for r in vertical_rulings],
     )
+
+
+def vertical_rule_columns(mask: np.ndarray, min_run: float = 0.15) -> np.ndarray:
+    """Columns crossed by one unbroken vertical stroke spanning many lines (margin rules, borders).
+
+    Handwriting never runs unbroken through `min_run` of the page height; a slightly tilted rule
+    still does once the mask is widened by a few pixels. Only meaningful on a whole page.
+    """
+    h, w = mask.shape
+    if h < 200:
+        return np.zeros(w, dtype=bool)
+    wide = mask.copy()
+    for shift in (1, 2):
+        wide[:, shift:] |= mask[:, :-shift]
+        wide[:, :-shift] |= mask[:, shift:]
+    need = int(min_run * h)
+    cols = np.zeros(w, dtype=bool)
+    for x in np.flatnonzero(wide.sum(axis=0) >= need):
+        cols[x] = any(b - a >= need for a, b in _runs(wide[:, x], min_len=need))
+    return cols | np.roll(cols, 1) | np.roll(cols, -1) | np.roll(cols, 2) | np.roll(cols, -2)
+
+
+def _grow_vertically(clean: np.ndarray, ruling_rows: np.ndarray, x0: int, x1: int, top: int, bottom: int, lo: int, hi: int) -> tuple[int, int]:
+    """Extend a word's rows while its own columns still hold ink, up to the limits [lo, hi).
+
+    Printed ruling rows were blanked from `clean`; a stroke crossing one continues if there is ink
+    on the far side of the ruling.
+    """
+    def inked(y: int, step: int) -> bool:
+        if clean[y, x0:x1].any():
+            return True
+        if not ruling_rows[y]:
+            return False
+        beyond = y
+        while lo <= beyond < hi and ruling_rows[beyond]:
+            beyond += step
+        return lo <= beyond < hi and bool(clean[beyond, x0:x1].any())
+
+    while top > lo and inked(top - 1, -1):
+        top -= 1
+    while bottom < hi and inked(bottom, 1):
+        bottom += 1
+    return top, bottom
 
 
 def word_gap_threshold(ink_runs: list[tuple[int, int]], line_h: int) -> int:

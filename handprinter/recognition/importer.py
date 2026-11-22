@@ -18,6 +18,7 @@ from handprinter.dataset import INLINE_MATH as MATH_SPAN
 from handprinter.db import dumps, new_id, now_iso, transaction
 from handprinter.geometry import Box, Homography
 from handprinter.recognition import align as aligner
+from handprinter.recognition import refit
 from handprinter.recognition.package import load_manifest, load_schema, package_dir
 from handprinter.storage import Store, sha256_file
 
@@ -90,7 +91,8 @@ def _box_inside(box: list[float], w: int, h: int, slack: float = 0.05) -> bool:
 def import_package(conn: sqlite3.Connection, store: Store, package_id: str) -> dict[str, Any]:
     manifest = load_manifest(store, package_id)
     entries = {e["item_id"]: e for e in manifest["items"]}
-    summary = {"imported": 0, "already_imported": 0, "failed": 0, "pending": 0, "protected_human_edits": 0, "errors": {}}
+    summary = {"imported": 0, "already_imported": 0, "failed": 0, "pending": 0, "protected_human_edits": 0, "lines_refit": 0, "errors": {}}
+    ink = refit.LineInk(conn, store)
     for check in validate_package(store, package_id):
         entry = entries.get(check.item_id)
         if entry is None:
@@ -117,20 +119,26 @@ def import_package(conn: sqlite3.Connection, store: Store, package_id: str) -> d
             continue
         assert check.result is not None
         with transaction(conn):
-            proposal_id, protected = _store_result(conn, manifest, entry, check.result)
+            proposal_id, protected, was_refit = _store_result(conn, manifest, entry, check.result, ink)
             conn.execute(
                 "UPDATE recognition_items SET status = 'succeeded', error = NULL, proposal_id = ?, updated_at = ? WHERE package_id = ? AND item_id = ?",
                 (proposal_id, now_iso(), package_id, check.item_id),
             )
         summary["imported"] += 1
         summary["protected_human_edits"] += protected
+        summary["lines_refit"] += int(was_refit)
     remaining = conn.execute("SELECT COUNT(*) FROM recognition_items WHERE package_id = ? AND status != 'succeeded'", (package_id,)).fetchone()[0]
     conn.execute("UPDATE recognition_packages SET status = ? WHERE id = ?", ("complete" if remaining == 0 else "partial", package_id))
     return summary
 
 
-def _store_result(conn: sqlite3.Connection, manifest: dict[str, Any], entry: dict[str, Any], result: dict[str, Any]) -> tuple[str, int]:
-    """Record the proposal and apply it where no human decision is in the way. Returns (proposal id, protected count)."""
+def _store_result(
+    conn: sqlite3.Connection, manifest: dict[str, Any], entry: dict[str, Any], result: dict[str, Any], ink: refit.LineInk | None = None,
+) -> tuple[str, int, bool]:
+    """Record the proposal and apply it where no human decision is in the way.
+
+    Returns (proposal id, protected count, whether the line's word boxes were re-cut to fit the text).
+    """
     model = result["model"].strip() or UNKNOWN_MODEL
     to_source = Homography.scale_offset(
         entry["to_source"]["scale_x"], entry["to_source"]["scale_y"], entry["to_source"]["offset_x"], entry["to_source"]["offset_y"]
@@ -167,15 +175,28 @@ def _store_result(conn: sqlite3.Connection, manifest: dict[str, Any], entry: dic
          manifest["schema_version"], entry["image_sha256"], region_revision, dumps(payload), 0, int(stale), now_iso()),
     )
     if stale or not region_id or entry["context_type"] == "page_overview":
-        return proposal_id, 0
+        return proposal_id, 0, False
 
+    src = dict(source)
     protected = 0
     reason = "; ".join(reasons)[:500] or None
     line_flags = set(flags)
     words = entry.get("local_boxes") or []
+    text = result["transcription"]
+    was_refit = False
     # A whole-maths line is one LaTeX example; spreading LaTeX over word boxes would be guesswork.
-    if result["transcription"] and words and result["region_type"] != "equation":
-        alignment = aligner.align(result["transcription"], [w["box"][2] for w in words])
+    if text and result["region_type"] != "equation":
+        alignment = aligner.align(text, [w["box"][2] for w in words]) if words else None
+        if ink is not None and (alignment is None or alignment.ambiguous):
+            outcome = _refit_line(conn, ink, src, region_id, words, text, alignment, flags, proposal_id)
+            if outcome is not None:
+                was_refit = True
+                clear, note = outcome
+                if not clear:
+                    line_flags.add("alignment_ambiguous")
+                reason = ((reason + "; ") if reason else "") + note
+    if text and words and result["region_type"] != "equation" and not was_refit:
+        assert alignment is not None
         if alignment.ambiguous:
             line_flags.add("alignment_ambiguous")
         if alignment.unplaced_tokens:
@@ -197,7 +218,6 @@ def _store_result(conn: sqlite3.Connection, manifest: dict[str, Any], entry: dic
     protected += 0 if applied else 1
     conn.execute("UPDATE proposals SET applied = ? WHERE id = ?", (int(applied), proposal_id))
 
-    src = dict(source)
     for mark in result["marks"]:
         if mark["box"] is None:
             continue
@@ -210,4 +230,54 @@ def _store_result(conn: sqlite3.Connection, manifest: dict[str, Any], entry: dic
             status="needs_review", flags=["machine_mark"] + ([] if mark["original_text_visible"] else ["original_not_visible"]),
             action=f"proposal:{proposal_id}", review_reason=note,
         )
-    return proposal_id, protected
+    return proposal_id, protected, was_refit
+
+
+def _untouched_machine_box(conn: sqlite3.Connection, region_id: str, packaged_revision: int | None) -> bool:
+    """True if no person has drawn, moved, labelled or decided on this region."""
+    row = conn.execute("SELECT * FROM regions WHERE id = ?", (region_id,)).fetchone()
+    if row is None or row["deleted"] or row["created_by"] == "human" or row["text_origin"] == "human":
+        return False
+    if row["status"] not in ("unprocessed", "proposed", "needs_review"):
+        return False
+    if packaged_revision is not None and row["revision"] != packaged_revision:
+        return False
+    return conn.execute("SELECT 1 FROM region_revisions WHERE region_id = ? AND actor = 'human' LIMIT 1", (region_id,)).fetchone() is None
+
+
+def _refit_line(
+    conn: sqlite3.Connection, ink: refit.LineInk, source: dict[str, Any], line_id: str, words: list[dict[str, Any]],
+    text: str, alignment: aligner.Alignment | None, flags: list[str], proposal_id: str,
+) -> tuple[bool, str] | None:
+    """Replace a line's untouched machine word boxes with boxes cut to match the recognised words.
+
+    Returns (every cut was clear, note for the reviewer), or None when nothing was changed: a person
+    touched a box, the ink cannot be cut into that many words, or the new cut fits no better.
+    """
+    if not all(_untouched_machine_box(conn, w["region_id"], w.get("region_revision")) for w in words):
+        return None
+    line = review.get_region(conn, line_id)
+    tokens = aligner.tokenize(text)
+    fitted = refit.refit_words(ink, source, Box(line["x"], line["y"], line["w"], line["h"]), len(tokens))
+    if fitted is None:
+        return None
+    boxes, clear = fitted
+    new_alignment = aligner.align(text, [b.w for b in boxes])
+    if alignment is not None and new_alignment.cost >= alignment.cost:
+        return None
+    clear = clear and not new_alignment.ambiguous
+    for w in words:
+        review._write(conn, review.get_region(conn, w["region_id"]), {"deleted": 1}, "machine", f"refit:{proposal_id}")
+    base = set(flags) - {"contains_math"}
+    for box, token in zip(boxes, tokens):
+        word = review.create_region(conn, source, "word", box, actor="machine", parent_id=line_id, action=f"refit:{proposal_id}")
+        word_flags = base | ({"contains_math"} if MATH_SPAN.search(token) else set()) | (set() if clear else {"alignment_ambiguous"})
+        review.machine_propose(conn, word["id"], token, word_flags, None if clear else "cut from the text; check the word edges")
+    # An untouched detector line grows to hold its words, so no tail or loop is cut off.
+    if _untouched_machine_box(conn, line_id, None):
+        grown = Box(line["x"], line["y"], line["w"], line["h"])
+        for b in boxes:
+            grown = grown.union(b)
+        if (grown.x, grown.y, grown.w, grown.h) != (line["x"], line["y"], line["w"], line["h"]):
+            review._write(conn, line, {"x": grown.x, "y": grown.y, "w": grown.w, "h": grown.h}, "machine", f"refit:{proposal_id}")
+    return clear, f"word boxes re-cut to match the {len(tokens)} recognised words"
