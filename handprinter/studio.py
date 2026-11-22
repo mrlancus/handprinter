@@ -111,6 +111,9 @@ def render(conn: sqlite3.Connection, store: Store, comp: Composition, dpi: int) 
     if page_w * page_h > MAX_IMAGE_PIXELS:
         raise ValueError("page too large at this resolution")
     page = Image.new("RGB", (page_w, page_h), "white")
+    for el in comp.elements:
+        if px(el.w_mm) * px(el.h_mm) > MAX_IMAGE_PIXELS // 2:
+            raise ValueError(f"element {el.id} is too large to render at {dpi} dpi; reduce its size or the resolution")
     assets = {r["id"]: dict(r) for r in conn.execute("SELECT * FROM studio_assets")}
     for el in comp.elements:
         asset = assets.get(el.asset_id)

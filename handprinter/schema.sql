@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS sources (
   mime TEXT NOT NULL,
   sha256 TEXT NOT NULL,
   dhash TEXT NOT NULL,
+  ink_sig TEXT NOT NULL DEFAULT '',
   original_ext TEXT NOT NULL,
   original_path TEXT NOT NULL,
   original_w INTEGER NOT NULL,
@@ -266,3 +267,11 @@ CREATE TABLE IF NOT EXISTS style_profiles (
   region_ids TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- Canonical split: once a page is assigned, it keeps its split in every later snapshot.
+CREATE TABLE IF NOT EXISTS source_splits (
+  source_id TEXT PRIMARY KEY REFERENCES sources(id),
+  split TEXT NOT NULL CHECK (split IN ('train', 'val', 'test')),
+  assigned_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_regions_source_status ON regions(source_id, status);

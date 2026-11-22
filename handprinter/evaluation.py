@@ -15,7 +15,8 @@ from PIL import Image
 
 from handprinter import __version__
 from handprinter.adapters import all_adapters
-from handprinter.adapters.base import InferRequest
+from handprinter.adapters.base import InferRequest, RunnerCancelled
+from handprinter.jobs import JobCancelled
 from handprinter.config import Settings
 from handprinter.db import dumps, new_id, now_iso, row_dict, transaction
 from handprinter.recognition.package import REPO_ROOT
@@ -94,13 +95,18 @@ def run_inference(
     try:
         request = InferRequest(supported, level, style_paths, seeds, out_dir, {**params.get("options", {}), "style_text": style_texts[0] if style_texts else ""})
         result = adapter.infer(request, lambda e: progress(float(e.get("fraction", 0)), str(e.get("message", ""))), cancelled)
+    except (RunnerCancelled, JobCancelled):
+        conn.execute("UPDATE runs SET status='cancelled', finished_at=?, duration_s=? WHERE id=?", (now_iso(), time.time() - started, run_id))
+        raise JobCancelled() from None
     except Exception as exc:
         conn.execute("UPDATE runs SET status='failed', error=?, finished_at=?, duration_s=? WHERE id=?",
                      (str(exc)[:2000], now_iso(), time.time() - started, run_id))
         raise
     with transaction(conn):
         for out in result.get("outputs", []):
-            path = Path(out["path"])
+            path = Path(out["path"]).resolve()
+            if out_dir.resolve() not in path.parents or out.get("seed") not in seeds or out.get("text") not in supported:
+                raise RuntimeError(f"runner reported an output outside its run directory or request: {out.get('path')}")
             with Image.open(path) as img:
                 w, h = img.size
             conn.execute(

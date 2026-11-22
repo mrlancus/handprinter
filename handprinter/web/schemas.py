@@ -6,9 +6,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-ID = Field(pattern=r"^[a-z]{2,6}_[0-9a-f]{16}$")
-
-
 class BoxIn(BaseModel):
     x: float
     y: float
@@ -44,6 +41,7 @@ class DetectIn(BaseModel):
 
 
 class RegionCreate(BaseModel):
+    processing_rev: int
     kind: Literal["line", "word", "block", "mark"]
     cls: str = "handwriting"
     box: BoxIn
@@ -53,6 +51,7 @@ class RegionCreate(BaseModel):
 
 class RegionPatch(BaseModel):
     expected_revision: int | None = None
+    processing_rev: int | None = None
     text: str | None = Field(default=None, max_length=2000)
     clear_text: bool = False
     box: BoxIn | None = None

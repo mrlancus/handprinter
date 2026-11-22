@@ -57,5 +57,33 @@ def main() -> None:
     print(f"Seeded {len(ids)} fixture pages into {settings.data_dir}")
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" and "--extras" not in sys.argv:
     main()
+
+
+def seed_extras() -> None:
+    """Recognition package (no results) plus a Studio asset and page, for screenshot coverage."""
+    from handprinter import studio
+    from handprinter.recognition import package
+
+    settings = get_settings()
+    store = Store(settings)
+    conn = connect(settings.db_path)
+    ids = [r["id"] for r in conn.execute("SELECT id FROM sources ORDER BY created_at")]
+    package.build(conn, store, settings, ids[2:3], include_overview=True, force=False)
+    words = [r["id"] for r in conn.execute("SELECT id FROM regions WHERE status = 'approved' AND kind = 'word' ORDER BY y, x")]
+    assets = [studio.add_region_asset(conn, store, w) for w in words[:8]]
+    els = []
+    x, y = 20.0, 25.0
+    for i, a in enumerate(assets):
+        w = round(8 * a["width"] / a["height"], 1)
+        if x + w > 190:
+            x, y = 20.0, y + 14
+        els.append({"id": f"e{i}", "asset_id": a["id"], "x_mm": x, "y_mm": y, "w_mm": w, "h_mm": 8})
+        x += w + 3
+    comp = studio.Composition(name="Fixture page", page_w_mm=210, page_h_mm=297, elements=els)
+    studio.save_composition(conn, comp, None, None)
+
+
+if __name__ == "__main__" and "--extras" in sys.argv:
+    seed_extras()

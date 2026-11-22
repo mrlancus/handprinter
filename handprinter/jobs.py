@@ -143,8 +143,15 @@ class JobContext:
         return bool(row and row["cancel_requested"])
 
 
-def finish(conn: sqlite3.Connection, job_id: str, status: str, result: Any = None, error: str | None = None) -> None:
-    conn.execute(
-        "UPDATE jobs SET status=?, result=?, error=?, finished_at=?, progress=CASE WHEN ?='succeeded' THEN 1 ELSE progress END WHERE id=?",
-        (status, json.dumps(result) if result is not None else None, error, now_iso(), status, job_id),
+def finish(conn: sqlite3.Connection, job_id: str, status: str, result: Any = None, error: str | None = None, pid: int | None = None) -> bool:
+    """Record a terminal state, but only if this runner still owns the job.
+
+    A job that recovery requeued (or that another worker claimed) is not overwritten by a
+    stale runner. Returns whether the update applied.
+    """
+    cur = conn.execute(
+        """UPDATE jobs SET status=?, result=?, error=?, finished_at=?, progress=CASE WHEN ?='succeeded' THEN 1 ELSE progress END
+           WHERE id=? AND status='running' AND (? IS NULL OR worker_pid=?)""",
+        (status, json.dumps(result) if result is not None else None, error, now_iso(), status, job_id, pid, pid),
     )
+    return cur.rowcount == 1

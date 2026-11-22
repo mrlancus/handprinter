@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from handprinter import dataset, evaluation, ingest, jobs, pages
 from handprinter.adapters import all_adapters
+from handprinter.adapters.base import RunnerCancelled
 from handprinter.config import Settings
 from handprinter.db import connect, init_db
 from handprinter.recognition import headless, importer, package
@@ -142,8 +143,11 @@ def run_one(conn: sqlite3.Connection, store: Store, settings: Settings, row: dic
     def beat() -> None:
         ctx = jobs.JobContext(beat_conn, row["id"])
         while not stop.wait(jobs.HEARTBEAT_SECONDS):
-            if ctx.heartbeat():
-                cancel.set()
+            try:
+                if ctx.heartbeat():
+                    cancel.set()
+            except Exception as exc:  # a missed beat must not stop later beats
+                log.warning("heartbeat for %s failed: %s", row["id"], exc)
 
     thread = threading.Thread(target=beat, daemon=True)
     thread.start()
@@ -153,13 +157,15 @@ def run_one(conn: sqlite3.Connection, store: Store, settings: Settings, row: dic
         if handler is None:
             raise RuntimeError(f"unknown job kind {row['kind']}")
         result = handler(Job(conn, store, settings, row, cancel))
-        jobs.finish(conn, row["id"], "succeeded", result)
+        if cancel.is_set():
+            result = {"note": "cancel was requested after the work had already completed", "result": result}
+        jobs.finish(conn, row["id"], "succeeded", result, pid=row["worker_pid"])
         log.info("job %s %s succeeded in %.1fs", row["id"], row["kind"], time.time() - started)
-    except jobs.JobCancelled:
-        jobs.finish(conn, row["id"], "cancelled", error="cancelled by user")
+    except (jobs.JobCancelled, RunnerCancelled):
+        jobs.finish(conn, row["id"], "cancelled", error="cancelled by user", pid=row["worker_pid"])
         log.info("job %s %s cancelled", row["id"], row["kind"])
     except Exception as exc:  # job failures are recorded, never crash the worker
-        jobs.finish(conn, row["id"], "failed", error=f"{exc.__class__.__name__}: {exc}"[:2000])
+        jobs.finish(conn, row["id"], "failed", error=f"{exc.__class__.__name__}: {exc}"[:2000], pid=row["worker_pid"])
         log.warning("job %s %s failed: %s\n%s", row["id"], row["kind"], exc, traceback.format_exc(limit=5))
     finally:
         stop.set()
@@ -170,12 +176,19 @@ def run_one(conn: sqlite3.Connection, store: Store, settings: Settings, row: dic
 def _lane_loop(settings: Settings, lane: str, stopping: threading.Event, poll: float) -> None:
     conn = connect(settings.db_path)
     store = Store(settings)
+    backoff = poll
     while not stopping.is_set():
-        row = jobs.claim(conn, lane, os.getpid())
-        if row is None:
-            stopping.wait(poll)
-            continue
-        run_one(conn, store, settings, row)
+        try:
+            row = jobs.claim(conn, lane, os.getpid())
+            if row is None:
+                stopping.wait(poll)
+                continue
+            run_one(conn, store, settings, row)
+            backoff = poll
+        except Exception as exc:  # keep the lane alive (e.g. "database is locked")
+            log.error("%s lane error: %s", lane, exc)
+            stopping.wait(backoff)
+            backoff = min(30.0, backoff * 2)
     conn.close()
 
 
@@ -202,7 +215,10 @@ def main(settings: Settings, poll: float = 0.5) -> None:
         t.start()
     log.info("worker %d started (data dir %s)", os.getpid(), settings.data_dir)
     while not stopping.wait(10):
-        jobs.recover(conn)
+        try:
+            jobs.recover(conn)
+        except Exception as exc:
+            log.error("recovery pass failed: %s", exc)
     for t in lanes:
         t.join(timeout=30)
     conn.close()

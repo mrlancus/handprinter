@@ -128,7 +128,7 @@ export async function render(root, params) {
     workspace.draw(); drawQueue(); drawInspector();
     setSave('saving');
     try {
-      const updated = await api(`/api/regions/${region.id}`, { method: 'PATCH', body: { expected_revision: region.revision, ...body } });
+      const updated = await api(`/api/regions/${region.id}`, { method: 'PATCH', body: { expected_revision: region.revision, processing_rev: state.page?.processing_rev, ...body } });
       upsert(updated);
       setSave('saved');
       window.dispatchEvent(new CustomEvent('hp:changed'));
@@ -403,7 +403,7 @@ export async function render(root, params) {
         const parent = state.drawKind === 'word' || state.drawKind === 'mark' ? enclosingLine(b) : null;
         try {
           setSave('saving');
-          const created = await api(`/api/sources/${state.page.id}/regions`, { body: { kind: state.drawKind, cls: state.drawKind === 'mark' ? 'underline' : state.drawKind === 'block' ? 'uncertain' : 'handwriting', box: b, parent_id: parent } });
+          const created = await api(`/api/sources/${state.page.id}/regions`, { body: { processing_rev: state.page.processing_rev, kind: state.drawKind, cls: state.drawKind === 'mark' ? 'underline' : state.drawKind === 'block' ? 'uncertain' : 'handwriting', box: b, parent_id: parent } });
           upsert(created); setSave('saved');
           select(created.id);
         } catch (err) { setSave('error', err instanceof Error ? err.message : String(err)); draw(); }

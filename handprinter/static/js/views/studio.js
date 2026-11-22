@@ -339,5 +339,6 @@ export async function render(root) {
   ro.observe(canvasWrap);
   loadLibrary();
   refresh();
+  api('/api/studio/compositions').then((list) => { if (list.length && !compId && !comp.elements.length) open(list[0].id); }).catch(() => {});
   return () => { document.removeEventListener('keydown', onKey); window.removeEventListener('beforeunload', beforeUnload); ro.disconnect(); };
 }

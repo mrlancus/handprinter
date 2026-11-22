@@ -35,6 +35,13 @@ def cli_status() -> dict[str, Any]:
     return {"installed": True, "logged_in": bool(info.get("loggedIn")), "detail": info.get("authMethod") or "", "path": exe}
 
 
+def agent_definition() -> dict[str, Any]:
+    """The recogniser agent, passed inline so the run never depends on (or can edit) the repo's .claude/."""
+    text = (REPO_ROOT / ".claude" / "agents" / f"{AGENT_NAME}.md").read_text(encoding="utf-8")
+    body = text.split("---", 2)[2].strip() if text.startswith("---") else text
+    return {AGENT_NAME: {"description": "Handprinter handwriting recogniser", "prompt": body, "tools": ["Read", "Write"], "model": "haiku"}}
+
+
 def build_command(exe: str, settings: Settings, job_dir: Path, item_ids: list[str]) -> list[str]:
     prompt = (
         f"Recognition package directory: {job_dir}\n"
@@ -45,12 +52,13 @@ def build_command(exe: str, settings: Settings, job_dir: Path, item_ids: list[st
     )
     return [
         exe, "-p", prompt,
+        "--agents", json.dumps(agent_definition()),
         "--agent", AGENT_NAME,
         "--model", settings.recognition_model,
         "--tools", "Read,Write",
         "--allowedTools", "Read,Write",
+        "--disallowedTools", "Bash,Edit,WebFetch,WebSearch",
         "--permission-mode", "acceptEdits",
-        "--add-dir", str(job_dir),
         "--output-format", "json",
     ]
 
@@ -64,6 +72,10 @@ def run_package(
         raise RuntimeError(f"headless recognition unavailable: {status['detail'] or 'not logged in'}; run `claude auth login`")
     job_dir = package_dir(store, package_id)
     manifest = load_manifest(store, package_id)
+    known = {e["item_id"] for e in manifest["items"]}
+    unknown = sorted(set(item_ids or []) - known)
+    if unknown:
+        raise ValueError(f"item ids not in this package: {', '.join(unknown[:5])}")
     todo = [e["item_id"] for e in manifest["items"]
             if (item_ids is None or e["item_id"] in item_ids) and not (job_dir / "results" / f"{e['item_id']}.json").exists()]
     chunks = [todo[i:i + CHUNK_SIZE] for i in range(0, len(todo), CHUNK_SIZE)]
@@ -74,7 +86,8 @@ def run_package(
             return {"items": chunk, "ok": False, "detail": "cancelled"}
         cmd = build_command(status["path"], settings, job_dir, chunk)
         try:
-            proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=CHUNK_TIMEOUT_S)
+            # cwd is the package directory: with acceptEdits, writes are confined to it.
+            proc = subprocess.run(cmd, cwd=job_dir, capture_output=True, text=True, timeout=CHUNK_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             return {"items": chunk, "ok": False, "detail": "timed out"}
         models: list[str] = []

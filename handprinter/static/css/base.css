@@ -113,3 +113,4 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { box-shadow: 
 .spacer { flex: 1; }
 .divider { height: 1px; background: var(--c-border); border: 0; margin: var(--sp-3) 0; }
 .progress--neutral > span { background: var(--c-text-faint); }
+.btn { text-decoration: none; }

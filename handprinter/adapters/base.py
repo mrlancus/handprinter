@@ -7,7 +7,9 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -107,7 +109,9 @@ def run_runner(
 ) -> dict[str, Any]:
     """Run an adapter runner in its own environment; JSON request on stdin, JSON-lines events on stdout.
 
-    The final event must have `"event": "result"`. Cancellation terminates the process group.
+    stderr is drained by a thread (bounded tail kept for errors) so a chatty runner cannot
+    deadlock; a watchdog enforces cancellation and timeout even when the runner is silent.
+    The final event must have `"event": "result"`.
     """
     kwargs: dict[str, Any] = {}
     if os.name == "nt":
@@ -115,40 +119,72 @@ def run_runner(
     else:
         kwargs["start_new_session"] = True
     proc = subprocess.Popen(
-        [python, str(script)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs
+        [python, str(script)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace", **kwargs,
     )
-    assert proc.stdin and proc.stdout
+    assert proc.stdin and proc.stdout and proc.stderr
     proc.stdin.write(json.dumps(request))
     proc.stdin.close()
-    started = time.time()
+    stderr_tail: deque[str] = deque(maxlen=40)
+    stop_reason: list[str] = []
+    done = threading.Event()
+
+    def drain() -> None:
+        for line in proc.stderr:  # type: ignore[union-attr]
+            stderr_tail.append(line)
+
+    def watchdog() -> None:
+        started = time.time()
+        while not done.wait(0.5):
+            if cancelled():
+                stop_reason.append("cancelled")
+            elif time.time() - started > timeout_s:
+                stop_reason.append("timeout")
+            if stop_reason:
+                _terminate(proc)
+                return
+
+    threads = [threading.Thread(target=drain, daemon=True), threading.Thread(target=watchdog, daemon=True)]
+    for t in threads:
+        t.start()
     result: dict[str, Any] | None = None
-    for line in proc.stdout:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get("event") == "result":
-            result = event
-        else:
-            on_event(event)
-        if cancelled() or time.time() - started > timeout_s:
-            _terminate(proc)
-            raise AdapterUnavailable("cancelled" if cancelled() else "runner timed out")
-    proc.wait()
-    stderr = (proc.stderr.read() if proc.stderr else "")[-2000:]
-    if proc.returncode != 0 or result is None:
-        raise RuntimeError(f"runner failed (exit {proc.returncode}): {stderr.strip() or 'no result event'}")
+    try:
+        for line in proc.stdout:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event") == "result":
+                result = event
+            else:
+                on_event(event)
+        proc.wait()
+    finally:
+        done.set()
+        threads[0].join(timeout=5)
+    if stop_reason == ["cancelled"]:
+        raise RunnerCancelled()
+    if stop_reason:
+        raise AdapterUnavailable(f"runner exceeded its {int(timeout_s)} s time limit and was stopped")
+    if proc.returncode != 0 or result is None or not result.get("ok", False):
+        detail = (result or {}).get("error") or "".join(stderr_tail)[-2000:].strip() or "no result event"
+        raise RuntimeError(f"runner failed (exit {proc.returncode}): {detail}")
     return result
+
+
+class RunnerCancelled(Exception):
+    """The user cancelled while the runner was working."""
 
 
 def _terminate(proc: subprocess.Popen) -> None:
     try:
         if os.name == "nt":
-            proc.terminate()
+            # Kill the whole tree (runner plus any children it spawned).
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=30)
         else:
             os.killpg(proc.pid, signal.SIGTERM)
         proc.wait(timeout=10)
-    except (ProcessLookupError, subprocess.TimeoutExpired):
+    except (ProcessLookupError, subprocess.TimeoutExpired, OSError):
         proc.kill()
 
 

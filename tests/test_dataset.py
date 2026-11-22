@@ -61,7 +61,7 @@ def test_splits_group_pages_duplicates_words_and_lines(conn, store, import_bytes
         detect_and_label(conn, store, sid)
     examples, _ = dataset.eligible_examples(conn, "approved_only", dataset.Filters())
     groups = dataset.leakage_groups(conn, examples)
-    splits, warnings = dataset.assign_splits(examples, groups, dataset.SplitConfig(seed=3))
+    splits, warnings, _ = dataset.assign_splits(examples, groups, dataset.SplitConfig(seed=3))
     by_source: dict[str, set[str]] = {}
     for ex in examples:
         by_source.setdefault(ex.source_id, set()).add(splits[ex.region_id])
@@ -79,7 +79,7 @@ def test_unseen_words_never_appear_in_training(conn, store, fixture_source):
     # all pages share fixture tokens (w0x0 ...), so every test word type also occurs in train
     groups = dataset.leakage_groups(conn, examples)
     cfg = dataset.SplitConfig(seed=5, unseen_word_fraction=0.5)
-    splits, _ = dataset.assign_splits(examples, groups, cfg)
+    splits, _, _ = dataset.assign_splits(examples, groups, cfg)
     vocab, dropped = dataset.unseen_words(examples, splits, cfg)
     assert vocab
     for ex in examples:
@@ -116,3 +116,19 @@ def test_too_few_groups_warns(conn, store, fixture_source):
     detect_and_label(conn, store, fixture_source())
     result = dataset.export_snapshot(conn, store, "tiny", "approved_only", dataset.Filters(), dataset.SplitConfig())
     assert any("unreliable" in w for w in result["warnings"])
+
+
+def test_canonical_split_is_stable_when_pages_are_added(conn, store, fixture_source):
+    for i in range(12):
+        detect_and_label(conn, store, fixture_source(variant=i + 1))
+    cfg = dataset.SplitConfig(seed=9)
+    examples, _ = dataset.eligible_examples(conn, "approved_only", dataset.Filters())
+    _, first, _ = dataset.canonical_splits(conn, examples, cfg)
+    by_source_before = {ex.source_id: first[ex.region_id] for ex in examples}
+    for i in range(12, 16):
+        detect_and_label(conn, store, fixture_source(variant=i + 1))
+    examples2, _ = dataset.eligible_examples(conn, "approved_only", dataset.Filters())
+    _, second, _ = dataset.canonical_splits(conn, examples2, cfg)
+    for ex in examples2:
+        if ex.source_id in by_source_before:
+            assert second[ex.region_id] == by_source_before[ex.source_id], "an earlier page changed split"

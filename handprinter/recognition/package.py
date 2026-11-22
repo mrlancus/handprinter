@@ -47,7 +47,8 @@ class PlannedItem:
     context_type: str
     target: Box
     context: Box
-    local_boxes: list[tuple[str, Box]] = field(default_factory=list)
+    local_boxes: list[tuple[str, Box, int]] = field(default_factory=list)
+    region_revision: int | None = None
 
 
 def _settings_signature() -> str:
@@ -77,9 +78,10 @@ def plan(conn: sqlite3.Connection, source_ids: list[str], include_overview: bool
             margin = max(12.0, 0.25 * line["h"])
             context = target.pad(margin).clamp(full.w, full.h)
             words = conn.execute(
-                "SELECT id, x, y, w, h FROM regions WHERE parent_id = ? AND deleted = 0 AND kind = 'word' ORDER BY x", (line["id"],)
+                "SELECT id, x, y, w, h, revision FROM regions WHERE parent_id = ? AND deleted = 0 AND kind = 'word' ORDER BY x", (line["id"],)
             ).fetchall()
-            items.append(PlannedItem(source_id, line["id"], "line", target, context, [(w["id"], Box(w["x"], w["y"], w["w"], w["h"])) for w in words]))
+            items.append(PlannedItem(source_id, line["id"], "line", target, context,
+                                     [(w["id"], Box(w["x"], w["y"], w["w"], w["h"]), w["revision"]) for w in words], line["revision"]))
     return items
 
 
@@ -155,9 +157,10 @@ def build(
             "to_source": {"scale_x": sx, "scale_y": sy, "offset_x": item.context.x, "offset_y": item.context.y},
             "context_type": item.context_type,
             "target_box": to_image(item.target),
-            "local_boxes": [{"region_id": rid, "box": to_image(b)} for rid, b in item.local_boxes],
+            "local_boxes": [{"region_id": rid, "box": to_image(b), "region_revision": rev} for rid, b, rev in item.local_boxes],
             "source_id": item.source_id,
             "region_id": item.region_id,
+            "region_revision": item.region_revision,
             "cache_key": key,
         })
 

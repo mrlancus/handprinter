@@ -122,3 +122,18 @@ def test_studio_works_with_imported_images_only(client):
 
     img = Image.open(BytesIO(png.content))
     assert img.size == (1000, 500)  # 100 mm × 50 mm at 254 dpi = 10 px/mm
+
+
+def test_lan_mode_requires_sign_in_for_remote_clients(tmp_path):
+    from handprinter.config import load_settings
+
+    s = load_settings({"HANDPRINTER_DATA_DIR": str(tmp_path / "d"), "HANDPRINTER_HOST": "0.0.0.0",
+                       "HANDPRINTER_ACCESS_TOKEN": "a-long-enough-token-123"}, dotenv=tmp_path / "x")
+    remote = TestClient(create_app(s), client=("192.168.1.20", 50000))
+    assert remote.get("/api/status", headers={"host": "192.168.1.5:8765"}).status_code == 401
+    assert remote.post("/api/login", json={"token": "wrong"}, headers={"host": "192.168.1.5:8765"}).status_code == 403
+    assert remote.post("/api/login", json={"token": "a-long-enough-token-123"}, headers={"host": "192.168.1.5:8765"}).status_code == 200
+    assert remote.get("/api/status", headers={"host": "192.168.1.5:8765"}).status_code == 200
+    # a loopback client with a foreign Host (DNS rebinding) is still refused
+    local = TestClient(create_app(s), client=("127.0.0.1", 50000))
+    assert local.get("/api/status", headers={"host": "evil.example"}).status_code == 400

@@ -103,3 +103,26 @@ def test_mark_link_allows_unknown_target(conn, region):
     with pytest.raises(review.ReviewError):
         review.link_mark(conn, mark["id"], None, None, unknown_target=False, unknown_original=True)
     assert review.link_mark(conn, mark["id"], None, None, unknown_target=True, unknown_original=True)
+
+
+def test_editing_an_approved_region_reopens_it(conn, region):
+    review.human_edit(conn, region["id"], {"text": "fox", "status": "approved"})
+    r = review.human_edit(conn, region["id"], {"text": "f0x"})
+    assert r["status"] == "needs_review" and "after approval" in r["review_reason"]
+    r = review.human_edit(conn, region["id"], {"text": "fox", "status": "approved"})
+    assert r["status"] == "approved"
+
+
+def test_box_edit_must_name_the_current_frame(conn, region):
+    src = pages.get_source(conn, region["source_id"])
+    box = {"x": 10, "y": 10, "w": 20, "h": 20}
+    with pytest.raises(review.ConflictError):
+        review.human_edit(conn, region["id"], {"box": box}, processing_rev=src["processing_rev"] + 1)
+    r = review.human_edit(conn, region["id"], {"box": box}, processing_rev=src["processing_rev"])
+    assert (r["x"], r["w"]) == (10, 20)
+
+
+def test_undo_does_not_revive_a_split_region(conn, region):
+    review.split_region(conn, region["id"], 120)
+    with pytest.raises(review.ReviewError, match="split or merged"):
+        review.undo(conn, region["id"])

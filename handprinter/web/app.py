@@ -285,18 +285,19 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     @app.post("/api/sources/{source_id}/regions")
     def create_region(source_id: str, body: S.RegionCreate, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         src = pages.get_source(conn, source_id)
+        review.check_frame(src, body.processing_rev)
         with transaction(conn):
             return review.create_region(conn, src, body.kind, Box(**body.box.model_dump()), actor="human", cls=body.cls,
                                         parent_id=body.parent_id, text=body.text, status="needs_review")
 
     @app.patch("/api/regions/{region_id}")
     def patch_region(region_id: str, body: S.RegionPatch, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
-        changes = body.model_dump(exclude_unset=True, exclude={"expected_revision", "reason", "clear_text"})
+        changes = body.model_dump(exclude_unset=True, exclude={"expected_revision", "reason", "clear_text", "processing_rev"})
         if body.clear_text:
             changes["text"] = None
         if "box" in changes and body.box is not None:
             changes["box"] = body.box.model_dump()
-        return review.human_edit(conn, region_id, changes, body.expected_revision, body.reason)
+        return review.human_edit(conn, region_id, changes, body.expected_revision, body.reason, body.processing_rev)
 
     @app.post("/api/regions/{region_id}/undo")
     def undo(region_id: str, body: S.RevisionIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
@@ -382,6 +383,7 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
 
     @app.post("/api/recognition/packages/{package_id}/retry-failed")
     def retry_failed(package_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        recpkg.load_manifest(store, check_id(package_id))
         root = recpkg.package_dir(store, package_id)
         rejected = root / "rejected"
         rejected.mkdir(exist_ok=True)

@@ -15,7 +15,8 @@ from handprinter.config import MAX_ARCHIVE_ENTRIES, MAX_ARCHIVE_EXPANDED_BYTES, 
 from handprinter.db import dumps, new_id, now_iso, transaction
 from handprinter.storage import Store, atomic_write, sha256_bytes
 
-NEAR_DUPLICATE_DISTANCE = 6
+NEAR_DUPLICATE_DISTANCE = 24   # of 256 dHash bits
+NEAR_DUPLICATE_INK_IOU = 0.6    # ink-layout overlap; see docs/architecture.md (open question)
 
 
 @dataclass
@@ -129,11 +130,22 @@ def import_upload(
         return [_import_bytes(conn, store, staged.read_bytes(), kind, filename, None, batch)]
     results: list[EntryResult] = []
     try:
-        entries = list(iter_archive(staged))
-    except ArchiveError as exc:
-        return [EntryResult(filename, "rejected", str(exc))]
-    for index, (name, data, reason) in enumerate(entries):
-        progress(index / max(1, len(entries)), name)
+        with zipfile.ZipFile(staged) as zf:
+            total = sum(1 for i in zf.infolist() if not i.is_dir())
+    except (zipfile.BadZipFile, OSError) as exc:
+        return [EntryResult(filename, "rejected", f"not a readable ZIP archive ({exc.__class__.__name__})")]
+    entries = iter_archive(staged)  # lazy: one entry's bytes in memory at a time
+    index = 0
+    while True:
+        try:
+            name, data, reason = next(entries)
+        except StopIteration:
+            break
+        except ArchiveError as exc:
+            results.append(EntryResult(filename, "rejected", str(exc)))
+            break
+        index += 1
+        progress(index / max(1, total), name)
         label = f"{filename}/{name}"
         if reason:
             status = "skipped" if reason.startswith("skip:") else "rejected"
@@ -160,13 +172,21 @@ def _import_bytes(
     if existing:
         return EntryResult(label, "duplicate", f"identical bytes already imported as {existing['id']}", [existing["id"]])
     try:
-        pages = imaging.render_pdf(data, MAX_PDF_PAGES) if kind == "pdf" else [imaging.decode_image(data, kind)]
+        pages = imaging.render_pdf(data, MAX_PDF_PAGES) if kind == "pdf" else iter([imaging.decode_image(data, kind)])
     except imaging.UnsupportedInput as exc:
         return EntryResult(label, "rejected", str(exc))
     group_id = new_id("grp")
     original_written: Path | None = None
     ids: list[str] = []
-    for page in pages:
+    while True:
+        try:
+            page = next(pages)
+        except StopIteration:
+            break
+        except imaging.UnsupportedInput as exc:
+            if not ids:
+                return EntryResult(label, "rejected", str(exc))
+            return EntryResult(label, "imported", f"{len(ids)} page(s) imported, then stopped: {exc}", ids)
         source_id = new_id("src")
         if original_written is None:
             original_written = store.original(source_id, imaging.EXT[kind])
@@ -176,21 +196,22 @@ def _import_bytes(
         imaging.save_preview(working, store.preview(source_id, 0, "thumb"), imaging.THUMB_EDGE)
         imaging.save_preview(working, store.preview(source_id, 0, "display"), imaging.DISPLAY_EDGE)
         page_hash = imaging.dhash(working)
-        near = _near_duplicates(conn, page_hash)
+        ink = imaging.ink_signature(working)
+        near = _near_duplicates(conn, page_hash, ink)
         with transaction(conn):
             conn.execute(
                 """INSERT INTO sources (id, batch_id, group_id, original_filename, container_filename, page_index,
                    source_type, session, captured_date, style_era, mime, sha256, dhash, original_ext,
                    original_w, original_h, exif_orientation, working_w, working_h, processed_w, processed_h,
-                   quality_flags, near_duplicates, created_at, original_path)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   quality_flags, near_duplicates, created_at, original_path, ink_sig)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     source_id, batch.batch_id, group_id, name, container, page.page_index,
                     batch.source_type, batch.session, batch.captured_date, batch.style_era,
                     imaging.MIME[kind], digest, page_hash, imaging.EXT[kind],
                     page.image.width, page.image.height, page.orientation, working.width, working.height,
                     working.width, working.height, dumps(imaging.quality_flags(working)), dumps(near), now_iso(),
-                    store.relative(original_written),
+                    store.relative(original_written), ink,
                 ),
             )
             for other in near:
@@ -198,7 +219,7 @@ def _import_bytes(
                 linked = sorted(set(_loads_list(row["near_duplicates"])) | {source_id})
                 conn.execute("UPDATE sources SET near_duplicates = ? WHERE id = ?", (dumps(linked), other))
         ids.append(source_id)
-    detail = f"{len(pages)} page(s)" if kind == "pdf" else ""
+    detail = f"{len(ids)} page(s)" if kind == "pdf" else ""
     near_any = conn.execute(
         f"SELECT COUNT(*) FROM sources WHERE id IN ({','.join('?' * len(ids))}) AND near_duplicates != '[]'", ids
     ).fetchone()[0]
@@ -211,6 +232,11 @@ def _loads_list(value: str) -> list[str]:
     return list(json.loads(value or "[]"))
 
 
-def _near_duplicates(conn: sqlite3.Connection, page_hash: str) -> list[str]:
-    rows = conn.execute("SELECT id, dhash FROM sources WHERE deleted = 0").fetchall()
-    return [r["id"] for r in rows if imaging.hamming(r["dhash"], page_hash) <= NEAR_DUPLICATE_DISTANCE]
+def _near_duplicates(conn: sqlite3.Connection, page_hash: str, ink: str) -> list[str]:
+    """Likely re-photographs of the same page: close layout hash AND overlapping ink. Warned, never deleted."""
+    rows = conn.execute("SELECT id, dhash, ink_sig FROM sources WHERE deleted = 0").fetchall()
+    return [
+        r["id"] for r in rows
+        if len(r["dhash"]) == len(page_hash) and imaging.hamming(r["dhash"], page_hash) <= NEAR_DUPLICATE_DISTANCE
+        and imaging.ink_similarity(r["ink_sig"], ink) >= NEAR_DUPLICATE_INK_IOU
+    ]

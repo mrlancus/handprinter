@@ -100,3 +100,15 @@ def test_unsafe_member_names():
     assert ingest.unsafe_member_reason(info("C:/x.png")) is not None
     assert ingest.unsafe_member_reason(info("a\\..\\b.png")) is not None
     assert ingest.unsafe_member_reason(info("ok/inner.png")) is None
+
+
+def test_pdf_pages_become_grouped_sources(import_bytes, conn):
+    import io
+
+    pages_ = [page([f"pdf page {i}"], size=(600, 800), variant=i + 1) for i in range(3)]
+    buf = io.BytesIO()
+    pages_[0].save(buf, "PDF", save_all=True, append_images=pages_[1:], resolution=100)
+    result = import_bytes(buf.getvalue(), "notebook.pdf")[0]
+    assert result.status == "imported" and len(result.source_ids) == 3
+    rows = conn.execute("SELECT group_id, page_index FROM sources WHERE id IN (?,?,?) ORDER BY page_index", result.source_ids).fetchall()
+    assert len({r["group_id"] for r in rows}) == 1 and [r["page_index"] for r in rows] == [0, 1, 2]

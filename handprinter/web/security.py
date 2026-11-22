@@ -34,16 +34,23 @@ def allowed_hosts(settings: Settings, extra: set[str]) -> set[str]:
 
 def make_guard(settings: Settings, request_token: str, extra_hosts: set[str]) -> Callable[[Request, Callable[[Request], Awaitable[Response]]], Awaitable[Response]]:
     hosts = allowed_hosts(settings, extra_hosts)
+    # Bound to all interfaces: the LAN address is not known in advance, so any Host is accepted
+    # and protection comes from the access-token session cookie required for non-loopback clients.
+    any_host = settings.lan_mode and settings.host in ("0.0.0.0", "::")
 
     async def guard(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
         host = request.headers.get("host", "")
-        if host not in hosts:
+        client = request.client.host if request.client else ""
+        remote = client not in LOOPBACK_HOSTS
+        # Loopback clients skip the sign-in, so their Host must always be a known name
+        # (blocks DNS rebinding); remote clients in wildcard LAN mode must sign in instead.
+        if host not in hosts and not (any_host and remote):
             return JSONResponse({"detail": "host not allowed"}, status_code=400)
         origin = request.headers.get("origin")
         if origin and urlsplit(origin).netloc != host:
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
-        client = request.client.host if request.client else ""
-        if settings.lan_mode and client not in LOOPBACK_HOSTS and request.url.path not in ("/login", "/api/login"):
+        public = request.url.path in ("/login", "/api/login") or request.url.path.startswith("/static/")
+        if settings.lan_mode and remote and not public:
             cookie = request.cookies.get(SESSION_COOKIE, "")
             if not hmac.compare_digest(cookie, session_value(settings.access_token)):
                 if request.url.path.startswith("/api/"):

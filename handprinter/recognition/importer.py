@@ -95,7 +95,12 @@ def import_package(conn: sqlite3.Connection, store: Store, package_id: str) -> d
         if entry is None:
             summary["errors"][check.item_id] = check.errors
             continue
-        state = conn.execute("SELECT status FROM recognition_items WHERE package_id = ? AND item_id = ?", (package_id, check.item_id)).fetchone()
+        state = conn.execute("SELECT status, image_sha256 FROM recognition_items WHERE package_id = ? AND item_id = ?", (package_id, check.item_id)).fetchone()
+        if state is None or state["image_sha256"] != entry["image_sha256"]:
+            # The manifest on disk no longer matches what the app packaged: never trust it.
+            summary["failed"] += 1
+            summary["errors"][check.item_id] = ["manifest entry does not match the package recorded by the app"]
+            continue
         if state and state["status"] == "succeeded":
             summary["already_imported"] += 1
             continue
@@ -140,11 +145,15 @@ def _store_result(conn: sqlite3.Connection, manifest: dict[str, Any], entry: dic
         flags.append("unreadable")
     reasons = list(result["review_reasons"]) + [f"uncertain {s['start']}–{s['end']}: {s['reason']}" for s in result["uncertain_spans"]]
 
+    if entry["context_type"] != "page_overview" and result["region_type"] not in ("handwriting", "mixed"):
+        flags.append(f"recogniser_type_{result['region_type']}")
     region_id = entry.get("region_id")
     region_revision = None
     if region_id:
         row = conn.execute("SELECT revision FROM regions WHERE id = ?", (region_id,)).fetchone()
         region_revision = row["revision"] if row else None
+        # The region was edited (box, split, merge, text) after packaging: the crop no longer matches.
+        stale = stale or row is None or (entry.get("region_revision") is not None and region_revision != entry["region_revision"])
     payload = {"text": result["transcription"], "flags": sorted(set(flags)), "reasons": reasons, "raw": result}
     proposal_id = new_id("prp")
     conn.execute(
@@ -168,6 +177,12 @@ def _store_result(conn: sqlite3.Connection, manifest: dict[str, Any], entry: dic
             reason = ((reason + "; ") if reason else "") + "no box for: " + " ".join(alignment.unplaced_tokens)
         for assignment in alignment.boxes:
             word = words[assignment.box_index]
+            current = conn.execute("SELECT revision, deleted FROM regions WHERE id = ?", (word["region_id"],)).fetchone()
+            if current is None or current["deleted"] or (word.get("region_revision") is not None and current["revision"] != word["region_revision"]):
+                line_flags.add("alignment_ambiguous")
+                reason = ((reason + "; ") if reason else "") + "some word boxes changed after packaging; words not updated"
+                protected += 1
+                continue
             word_flags = set(flags) | ({"alignment_ambiguous"} if assignment.ambiguous else set())
             applied, _ = review.machine_propose(conn, word["region_id"], assignment.text, word_flags, assignment.reason)
             protected += 0 if applied else 1

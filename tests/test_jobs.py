@@ -77,3 +77,11 @@ def test_failed_job_records_error_and_worker_survives(conn, settings):
     worker.run_one(conn, Store(settings), settings, jobs.claim(conn, "general", 1))
     job = jobs.get(conn, job_id)
     assert job["status"] == "failed" and "not found" in job["error"]
+
+
+def test_stale_runner_cannot_overwrite_requeued_job(conn):
+    job_id = jobs.enqueue(conn, "detect", {})
+    jobs.claim(conn, "general", 4242)
+    jobs.recover(conn, now=time.time() + 120, pid_alive=lambda pid: False)   # requeued
+    assert not jobs.finish(conn, job_id, "succeeded", {"x": 1}, pid=4242)
+    assert jobs.get(conn, job_id)["status"] == "queued"

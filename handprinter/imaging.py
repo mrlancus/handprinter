@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass
+from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -95,7 +96,8 @@ def decode_image(data: bytes, kind: str) -> Decoded:
     return Decoded(image=_to_rgb(img), orientation=orientation)
 
 
-def render_pdf(data: bytes, max_pages: int, dpi: int = 200) -> list[Decoded]:
+def render_pdf(data: bytes, max_pages: int, dpi: int = 200) -> Iterator[Decoded]:
+    """Render pages one at a time, so a long PDF never sits in memory as images all at once."""
     if not pdf_available():
         raise UnsupportedInput("PDF pages need the optional renderer: pip install -e \".[pdf]\"")
     import pypdfium2 as pdfium
@@ -107,15 +109,13 @@ def render_pdf(data: bytes, max_pages: int, dpi: int = 200) -> list[Decoded]:
     try:
         if len(doc) > max_pages:
             raise UnsupportedInput(f"PDF has {len(doc)} pages (limit {max_pages})")
-        pages = []
         for index in range(len(doc)):
             page = doc[index]
             pw, ph = page.get_size()
             scale = dpi / 72
             if pw * ph * scale * scale > MAX_IMAGE_PIXELS:
                 scale = (MAX_IMAGE_PIXELS / (pw * ph)) ** 0.5
-            pages.append(Decoded(image=_to_rgb(page.render(scale=scale).to_pil()), orientation=1, page_index=index))
-        return pages
+            yield Decoded(image=_to_rgb(page.render(scale=scale).to_pil()), orientation=1, page_index=index)
     finally:
         doc.close()
 
@@ -148,13 +148,44 @@ def orient(decoded: Decoded) -> Image.Image:
     return decoded.image.transpose(op) if op is not None else decoded.image
 
 
+DHASH_SIZE = 16  # 256-bit difference hash; 64-bit hashes collide on same-template worksheets
+
+
 def dhash(img: Image.Image) -> str:
-    small = np.asarray(img.convert("L").resize((9, 8), Image.Resampling.LANCZOS), dtype=np.int16)
+    small = np.asarray(img.convert("L").resize((DHASH_SIZE + 1, DHASH_SIZE), Image.Resampling.LANCZOS), dtype=np.int16)
     bits = (small[:, 1:] > small[:, :-1]).flatten()
     value = 0
     for bit in bits:
         value = (value << 1) | int(bit)
-    return f"{value:016x}"
+    return f"{value:0{DHASH_SIZE * DHASH_SIZE // 4}x}"
+
+
+INK_SIG_SIZE = (256, 192)
+
+
+def ink_signature(img: Image.Image) -> str:
+    """Coarse ink mask (256×192, ruling rows removed, dilated) as hex.
+
+    Combined with dHash it tells re-photographed copies apart from different text on the
+    same worksheet template. Thresholds are first guesses to be tuned on real photos.
+    """
+    small = img.convert("L").resize(INK_SIG_SIZE, Image.Resampling.BOX)
+    arr = np.asarray(small, dtype=np.float32)
+    local = np.asarray(small.filter(ImageFilter.BoxBlur(8)), dtype=np.float32)
+    mask = arr < local - 10
+    mask[mask.mean(axis=1) > 0.3] = False
+    dilated = Image.fromarray((mask * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(5))
+    return np.packbits(np.asarray(dilated).flatten() > 0).tobytes().hex()
+
+
+def ink_similarity(a: str, b: str) -> float:
+    """Intersection over union of two ink signatures (1.0 = same ink layout)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    x = np.unpackbits(np.frombuffer(bytes.fromhex(a), dtype=np.uint8))
+    y = np.unpackbits(np.frombuffer(bytes.fromhex(b), dtype=np.uint8))
+    union = np.logical_or(x, y).sum()
+    return float(np.logical_and(x, y).sum() / union) if union else 1.0
 
 
 def hamming(a: str, b: str) -> int:
@@ -212,7 +243,11 @@ def normalise_lighting(img: Image.Image) -> Image.Image:
 
 
 def save_preview(img: Image.Image, path: Path, edge: int) -> None:
-    _scaled(img, edge).save(path, "JPEG", quality=86, optimize=True)
+    buf = io.BytesIO()
+    _scaled(img, edge).save(buf, "JPEG", quality=86, optimize=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(buf.getvalue())
+    tmp.replace(path)
 
 
 def cut_crop(working: Image.Image, working_to_processed: Homography, box: Box) -> Image.Image:

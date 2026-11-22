@@ -113,9 +113,11 @@ def _exclusion(r: sqlite3.Row, policy: str, filters: Filters, marked: set[str]) 
 
 
 def leakage_groups(conn: sqlite3.Connection, examples: list[Example]) -> dict[str, str]:
-    """Map each source ID to a leakage group (union of source group and near-duplicates).
+    """Map each source ID to a canonical leakage group key.
 
-    Words and lines on the same page share a source, so they always share a group.
+    Groups are the union of source groups, identical bytes and near-duplicate links. The key
+    is the smallest member source ID, so it does not depend on row order. Words and lines on
+    the same page share a source, so they always share a group.
     """
     parent: dict[str, str] = {}
 
@@ -127,18 +129,29 @@ def leakage_groups(conn: sqlite3.Connection, examples: list[Example]) -> dict[st
         return x
 
     def union(a: str, b: str) -> None:
-        parent[find(a)] = find(b)
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
 
     for row in conn.execute("SELECT id, group_id, near_duplicates, sha256 FROM sources WHERE deleted = 0"):
-        union(f"s:{row['id']}", f"g:{row['group_id']}")
-        union(f"s:{row['id']}", f"h:{row['sha256']}")
+        union(f"s:{row['id']}", f"t:g:{row['group_id']}")
+        union(f"s:{row['id']}", f"t:h:{row['sha256']}")
         for other in json.loads(row["near_duplicates"]):
             union(f"s:{row['id']}", f"s:{other}")
-    return {ex.source_id: find(f"s:{ex.source_id}") for ex in examples}
+    # "s:" sorts before "t:", so each root is the group's smallest source ID.
+    return {ex.source_id: find(f"s:{ex.source_id}")[2:] for ex in examples}
 
 
-def assign_splits(examples: list[Example], groups: dict[str, str], config: SplitConfig) -> tuple[dict[str, str], list[str]]:
-    """Assign whole groups to train/val/test by example count. Returns (region→split, warnings)."""
+def assign_splits(
+    examples: list[Example], groups: dict[str, str], config: SplitConfig, existing: dict[str, str] | None = None,
+) -> tuple[dict[str, str], list[str], dict[str, str]]:
+    """Assign whole groups to train/val/test.
+
+    `existing` maps source ID → split from earlier snapshots; those groups keep their split so
+    every experiment shares one canonical split. Only new groups are placed, greedily by
+    example count toward the target ratios. Returns (region → split, warnings, source → split).
+    """
+    existing = existing or {}
     warnings: list[str] = []
     by_group: dict[str, list[Example]] = defaultdict(list)
     for ex in examples:
@@ -146,24 +159,49 @@ def assign_splits(examples: list[Example], groups: dict[str, str], config: Split
     split_of_group: dict[str, str] = {}
     holdout = set(config.holdout_sessions)
     for g, exs in by_group.items():
+        prior = Counter(existing[ex.source_id] for ex in exs if ex.source_id in existing)
         if holdout and any(ex.session in holdout for ex in exs):
             split_of_group[g] = "test"
-    rest = sorted((g for g in by_group if g not in split_of_group), key=lambda g: hashlib.sha256(f"{config.seed}:{g}".encode()).hexdigest())
-    total = sum(len(by_group[g]) for g in rest)
+            if prior and set(prior) != {"test"}:
+                warnings.append(f"held-out session moved previously assigned page group {g} to test")
+        elif prior:
+            split_of_group[g] = prior.most_common(1)[0][0]
+            if len(prior) > 1:
+                warnings.append(f"page group {g} now joins pages from different earlier splits; all moved to {split_of_group[g]}")
+    total = sum(len(v) for v in by_group.values())
     targets = {"train": config.train * total, "val": config.val * total, "test": config.test * total}
-    counts = {"train": 0, "val": 0, "test": 0}
+    counts = Counter({k: 0 for k in targets})
+    for g, split in split_of_group.items():
+        counts[split] += len(by_group[g])
+    rest = sorted((g for g in by_group if g not in split_of_group), key=lambda g: hashlib.sha256(f"{config.seed}:{g}".encode()).hexdigest())
     for g in rest:
-        need = {k: targets[k] - counts[k] for k in counts}
-        choice = max(("val", "test", "train"), key=lambda k: need[k] / max(targets[k], 1e-9) if targets[k] else -1)
+        choice = max(("val", "test", "train"), key=lambda k: (targets[k] - counts[k]) / targets[k] if targets[k] else -1)
         split_of_group[g] = choice
         counts[choice] += len(by_group[g])
     n_groups = len(by_group)
     if n_groups < 10:
         warnings.append(f"only {n_groups} independent page group(s): split percentages and evaluation are unreliable")
+    biggest = max((len(v) for v in by_group.values()), default=0)
+    if total and biggest / total > 0.3 and n_groups > 1:
+        warnings.append(f"one page group holds {biggest / total:.0%} of examples (near-duplicate or source-group links may be chaining pages together)")
     for name in ("val", "test"):
         if not any(s == name for s in split_of_group.values()):
             warnings.append(f"the {name} split is empty")
-    return {ex.region_id: split_of_group[groups[ex.source_id]] for ex in examples}, warnings
+    source_split = {ex.source_id: split_of_group[groups[ex.source_id]] for ex in examples}
+    return {ex.region_id: split_of_group[groups[ex.source_id]] for ex in examples}, warnings, source_split
+
+
+def canonical_splits(conn: sqlite3.Connection, examples: list[Example], config: SplitConfig) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    """Load the stored canonical split, extend it to new pages, persist it. Returns (groups, region → split, warnings)."""
+    groups = leakage_groups(conn, examples)
+    existing = {r["source_id"]: r["split"] for r in conn.execute("SELECT source_id, split FROM source_splits")}
+    splits, warnings, by_source = assign_splits(examples, groups, config, existing)
+    with transaction(conn):
+        conn.executemany(
+            "INSERT INTO source_splits (source_id, split, assigned_at) VALUES (?,?,?) ON CONFLICT(source_id) DO UPDATE SET split = excluded.split",
+            [(sid, split, now_iso()) for sid, split in by_source.items() if existing.get(sid) != split],
+        )
+    return groups, splits, warnings
 
 
 def unseen_words(examples: list[Example], splits: dict[str, str], config: SplitConfig) -> tuple[set[str], set[str]]:
@@ -211,8 +249,7 @@ def export_snapshot(
     examples, excluded = eligible_examples(conn, policy, filters)
     if not examples:
         raise ValueError("nothing to export: no examples match this policy and filter yet")
-    groups = leakage_groups(conn, examples)
-    splits, warnings = assign_splits(examples, groups, config)
+    groups, splits, warnings = canonical_splits(conn, examples, config)
     vocab, dropped = unseen_words(examples, splits, config)
     snapshot_id = new_id("snap")
     root = store.dir("datasets") / snapshot_id
@@ -220,13 +257,15 @@ def export_snapshot(
         (root / sub).mkdir(parents=True)
     records: dict[str, list[dict[str, Any]]] = {"word": [], "line": []}
     items = []
+    images = pages.WorkingImages(store)
+    examples = sorted(examples, key=lambda e: (e.source_id, e.kind, e.region_id))
     for index, ex in enumerate(examples):
         progress(index / len(examples), f"{index + 1}/{len(examples)}")
         if ex.region_id in dropped:
             excluded["kept out of training to keep unseen words unseen"] += 1
             continue
         region = dict(ex.row)
-        crop, _ = pages.region_crop(conn, store, region)
+        crop, _ = pages.region_crop(conn, store, region, images=images)
         data = imaging.png_bytes(crop)
         digest = sha256_bytes(data)
         rel = f"{'words' if ex.kind == 'word' else 'lines'}/{ex.region_id}-r{ex.revision}.png"
@@ -293,9 +332,16 @@ Warnings: {'; '.join(meta['warnings']) or 'none'}
 """
 
 
-def snapshot_is_intact(store: Store, snapshot: dict[str, Any]) -> bool:
+def snapshot_is_intact(store: Store, snapshot: dict[str, Any], check_images: bool = True) -> bool:
+    """Manifests match the recorded hash, and every crop matches the hash in its manifest line."""
     root: Path = store.resolve_relative(snapshot["path"])
     digest = hashlib.sha256()
     for fname in ("words.jsonl", "lines.jsonl"):
-        digest.update((root / fname).read_bytes())
+        body = (root / fname).read_bytes()
+        digest.update(body)
+        if check_images:
+            for line in body.decode("utf-8").splitlines():
+                rec = json.loads(line)
+                if sha256_bytes((root / rec["image"]).read_bytes()) != rec["image_sha256"]:
+                    return False
     return digest.hexdigest() == snapshot["manifest_sha256"]

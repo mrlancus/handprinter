@@ -118,7 +118,35 @@ def test_human_edits_survive_reimport(conn, store, built):
     summary = importer.import_package(conn, store, info["package_id"])
     after = review.get_region(conn, line["region_id"])
     assert after["text"] == "the quick brown fox" and after["status"] == "approved"
+    assert summary["imported"] == 1
+    # the region changed after packaging, so the proposal is recorded but stale and unapplied
+    prop = conn.execute("SELECT applied, stale FROM proposals WHERE region_id = ?", (line["region_id"],)).fetchone()
+    assert (prop["applied"], prop["stale"]) == (0, 1)
+
+
+def test_human_text_is_protected_even_when_region_unchanged(conn, store, built):
+    sid, info, manifest = built
+    line = [e for e in manifest["items"] if e["context_type"] == "line"][1]
+    # simulate a human decision recorded without a revision bump visible to the package (direct protection path)
+    conn.execute("UPDATE regions SET text = 'jumps over the lazy dog', text_origin = 'human' WHERE id = ?", (line["region_id"],))
+    _write(store, info["package_id"], line["item_id"], _result(line, transcription="jumps ovar the lazy dog"))
+    summary = importer.import_package(conn, store, info["package_id"])
+    after = review.get_region(conn, line["region_id"])
+    assert after["text"] == "jumps over the lazy dog" and "disagreement" in after["flags"]
     assert summary["protected_human_edits"] >= 1
+
+
+def test_tampered_manifest_is_rejected(conn, store, built):
+    sid, info, manifest = built
+    root = package.package_dir(store, info["package_id"])
+    entry = [e for e in manifest["items"] if e["context_type"] == "line"][0]
+    _write(store, info["package_id"], entry["item_id"], _result(entry, transcription="x"))
+    data = json.loads((root / "manifest.json").read_text())
+    data["items"][1]["region_id"] = "reg_0000000000000000"
+    data["items"][1]["image_sha256"] = "f" * 64
+    (root / "manifest.json").write_text(json.dumps(data))
+    summary = importer.import_package(conn, store, info["package_id"])
+    assert summary["imported"] == 0
 
 
 def test_marks_become_separate_regions(conn, store, built):

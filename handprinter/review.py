@@ -65,6 +65,11 @@ def _record(conn: sqlite3.Connection, region: dict[str, Any], actor: str, action
     )
 
 
+def check_frame(source: dict[str, Any], processing_rev: int | None) -> None:
+    if processing_rev != source["processing_rev"]:
+        raise ConflictError("the page was re-processed since you loaded it; reload before drawing")
+
+
 def create_region(
     conn: sqlite3.Connection,
     source: dict[str, Any],
@@ -131,12 +136,20 @@ def _load_for_edit(conn: sqlite3.Connection, region_id: str, expected_revision: 
 
 
 def human_edit(
-    conn: sqlite3.Connection, region_id: str, changes: dict[str, Any], expected_revision: int | None = None, reason: str | None = None
+    conn: sqlite3.Connection, region_id: str, changes: dict[str, Any], expected_revision: int | None = None, reason: str | None = None,
+    processing_rev: int | None = None,
 ) -> dict[str, Any]:
-    """Apply a human edit: text, box, class, kind, other-author flag, deferral or status change."""
+    """Apply a human edit: text, box, class, kind, other-author flag, deferral or status change.
+
+    A box must say which processing revision its coordinates belong to, so a client still
+    showing an older frame cannot silently misplace it. Changing the text or box of an
+    approved region sends it back to review unless the same edit re-approves it.
+    """
     with transaction(conn):
         region = _load_for_edit(conn, region_id, expected_revision)
-        source = conn.execute("SELECT processed_w, processed_h FROM sources WHERE id = ?", (region["source_id"],)).fetchone()
+        source = conn.execute("SELECT processed_w, processed_h, processing_rev FROM sources WHERE id = ?", (region["source_id"],)).fetchone()
+        if "box" in changes and processing_rev != source["processing_rev"]:
+            raise ConflictError("the page was re-processed since you loaded it; reload before moving boxes")
         out: dict[str, Any] = {}
         actions = []
         if "text" in changes:
@@ -177,6 +190,9 @@ def human_edit(
         if "status" in changes:
             out.update(_status_change({**region, **out}, changes["status"], reason))
             actions.append(f"status:{changes['status']}")
+        elif region["status"] == "approved" and (("text" in out and out["text"] != region["text"]) or "x" in out):
+            out.update(status="needs_review", review_reason="edited after approval; approve again to keep it")
+            actions.append("reopened_by_edit")
         if reason is not None and "review_reason" not in out:
             out["review_reason"] = reason
         if not out:
@@ -256,6 +272,9 @@ def undo(conn: sqlite3.Connection, region_id: str, expected_revision: int | None
         ).fetchone()
         if prev is None:
             raise ReviewError("nothing to undo")
+        last = conn.execute("SELECT action FROM region_revisions WHERE region_id = ? AND revision = ?", (region_id, region["revision"])).fetchone()
+        if region["deleted"] and last and last["action"].startswith(("split_into", "merged_into")):
+            raise ReviewError("this region was split or merged; undo the parts instead")
         data = json.loads(prev["data"])
         changes = {k: data[k] for k in SNAPSHOT_FIELDS if data[k] != region[k]}
         if not changes:

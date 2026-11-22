@@ -95,25 +95,34 @@ def run_detection(conn: sqlite3.Connection, store: Store, source_id: str, replac
     if source["processing"].get("lighting"):
         img = imaging.normalise_lighting(img)
     result = detect.detect_layout(img)
-    created = {"lines": 0, "words": 0, "rulings": 0}
+    created = {"lines": 0, "words": 0, "rulings": 0, "skipped_overlapping": 0}
     with transaction(conn):
-        existing = conn.execute(
-            "SELECT COUNT(*) FROM regions WHERE source_id = ? AND deleted = 0 AND created_by = 'detector' AND revision = 1",
-            (source_id,),
-        ).fetchone()[0]
-        if replace:
-            # Only untouched detector proposals are replaced; anything edited is kept.
-            for row in conn.execute(
-                "SELECT id FROM regions WHERE source_id = ? AND deleted = 0 AND created_by = 'detector' AND revision = 1", (source_id,)
-            ).fetchall():
-                review._write(conn, review.get_region(conn, row["id"]), {"deleted": 1}, "detector", "replaced_by_redetect")
-        elif existing:
+        detector_rows = conn.execute(
+            "SELECT id, revision FROM regions WHERE source_id = ? AND deleted = 0 AND created_by = 'detector'", (source_id,)
+        ).fetchall()
+        if detector_rows and not replace:
             return {"skipped": True, "reason": "detector proposals already exist; use replace to re-run", **created}
+        # Only untouched detector proposals are replaced; anything edited or drawn by a person is kept.
+        for row in detector_rows:
+            if row["revision"] == 1:
+                review._write(conn, review.get_region(conn, row["id"]), {"deleted": 1}, "detector", "replaced_by_redetect")
+        kept = [Box(r["x"], r["y"], r["w"], r["h"]) for r in conn.execute(
+            "SELECT x, y, w, h FROM regions WHERE source_id = ? AND deleted = 0 AND kind IN ('line', 'word', 'block')", (source_id,))]
+
+        def overlaps_kept(box: Box) -> bool:
+            return any(box.intersection_area(k) > 0.5 * min(box.w * box.h, k.w * k.h) for k in kept)
+
         for ruling in result.rulings:
+            if overlaps_kept(ruling):
+                created["skipped_overlapping"] += 1
+                continue
             review.create_region(conn, source, "block", ruling, actor="detector", cls="printed_ruling")
             created["rulings"] += 1
         for line in result.lines:
             flags = ["ruling_overlap"] if line.overlaps_ruling else []
+            if overlaps_kept(line.box):
+                created["skipped_overlapping"] += 1
+                continue
             line_region = review.create_region(conn, source, "line", line.box, actor="detector", flags=flags)
             created["lines"] += 1
             for wbox in line.words:
@@ -123,15 +132,33 @@ def run_detection(conn: sqlite3.Connection, store: Store, source_id: str, replac
     return created
 
 
-def region_crop(conn: sqlite3.Connection, store: Store, region: dict[str, Any], pad: float = 0.0) -> tuple[Image.Image, str]:
-    """Return a region's crop from the full-resolution working image, cached per revision."""
-    source = get_source(conn, region["source_id"])
-    if region["processing_rev"] != source["processing_rev"]:
-        raise review.ReviewError("region geometry is on an older processing revision")
+class WorkingImages:
+    """Keeps the most recently decoded working image so batch crops decode each page once."""
+
+    def __init__(self, store: Store):
+        self.store = store
+        self._key: tuple[str, int] | None = None
+        self._img: Image.Image | None = None
+
+    def get(self, source: dict[str, Any]) -> Image.Image:
+        key = (source["id"], source["processing_rev"])
+        if key != self._key or self._img is None:
+            self._img = Image.open(self.store.working(source["id"])).convert("RGB")
+            self._key = key
+        return self._img
+
+
+def region_crop(
+    conn: sqlite3.Connection, store: Store, region: dict[str, Any], pad: float = 0.0, images: WorkingImages | None = None,
+) -> tuple[Image.Image, str]:
+    """Return a region's crop from the full-resolution working image, cached per revision on disk."""
     path = store.crop(region["id"], region["revision"], region["processing_rev"])
     if pad == 0 and path.exists():
         return Image.open(path), str(path)
-    working = Image.open(store.working(source["id"])).convert("RGB")
+    source = get_source(conn, region["source_id"])
+    if region["processing_rev"] != source["processing_rev"]:
+        raise review.ReviewError("region geometry is on an older processing revision")
+    working = (images or WorkingImages(store)).get(source)
     box = Box(region["x"], region["y"], region["w"], region["h"])
     if pad:
         box = box.pad(pad).clamp(source["processed_w"], source["processed_h"])
