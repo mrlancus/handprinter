@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venvs/
+build/
+dist/
+.pytest_cache/
+# Node (dev-only type checking)
+node_modules/
+# Local configuration and runtime data — never commit personal data
+.env
+handprinter-data/
+data/
+*.sqlite3
+*.sqlite3-*
+*.db
+logs/
+*.log
+# Model weights and outputs
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+checkpoints/
+runs/
+outputs/
+# Recognition packages
+recognition/jobs/
+# Scratch screenshots (curated ones live in docs/screenshots)
+scripts/out/
