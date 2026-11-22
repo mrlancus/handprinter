@@ -143,3 +143,83 @@
   .view--fill { height: 100vh; display: flex; flex-direction: column; }
   .view--fill .rv { flex: 1; height: auto; min-height: 0; }
 }
+
+/* ----- Dataset ----- */
+.ds-grid { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: var(--sp-5); align-items: start; }
+.ds-form { position: sticky; top: var(--sp-4); }
+.ds-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-3); }
+.ds-kpi { display: grid; gap: 2px; padding: var(--sp-3); background: var(--c-panel-sunken); border-radius: var(--radius-sm); }
+.ds-kpi__value { font: var(--fw-regular) var(--fs-2xl)/1.1 var(--font-display); font-variant-numeric: tabular-nums; }
+.ds-bar { width: 40%; vertical-align: middle; }
+.ds-chars { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 4px; }
+.ds-chars li { display: grid; justify-items: center; padding: 4px 0; border: var(--bw) solid var(--c-border); border-radius: var(--radius-sm); }
+.ds-chars__ch { font-size: var(--fs-lg); }
+.ds-fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 2px; }
+.ds-adv { margin-top: var(--sp-2); }
+.ds-path { max-width: 220px; word-break: break-all; }
+.plain-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+
+/* ----- Experiments ----- */
+.ex-adapters { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: var(--sp-4); }
+.ex-adapter .panel__head { align-items: flex-start; }
+.ex-adapter .row a { display: inline-flex; align-items: center; gap: 2px; }
+.ex-adapter .row a svg { width: 12px; height: 12px; }
+.ex-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-4); font-size: var(--fs-sm); }
+.ex-checks li, .set-line { display: inline-flex; align-items: center; gap: 6px; }
+.ex-ok, .ex-no { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; }
+.ex-ok { background: var(--c-accent-soft); color: var(--c-accent); }
+.ex-no { background: var(--c-neutral-soft); color: var(--c-text-muted); }
+.ex-ok svg, .ex-no svg { width: 12px; height: 12px; }
+.ex-blockers { margin: 0; padding-left: 1.1em; }
+.ex-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
+.ex-ab { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-4); }
+.ex-ab figure { margin: 0; display: grid; gap: var(--sp-1); padding: var(--sp-3); background: var(--c-panel-sunken); border: var(--bw) solid var(--c-border); border-radius: var(--radius-md); }
+.ex-ab img { max-height: 160px; width: auto; margin: auto; }
+.ex-ab figcaption { text-align: center; font-weight: var(--fw-bold); }
+
+/* ----- Studio ----- */
+.st { display: grid; grid-template-columns: 260px minmax(0, 1fr) 300px; flex: 1; min-height: 0; height: calc(100vh - 92px); border-top: var(--bw) solid var(--c-border); }
+.st-lib, .st-props { overflow: auto; background: var(--c-panel); padding: var(--sp-3); }
+.st-lib { border-right: var(--bw) solid var(--c-border); display: flex; flex-direction: column; gap: var(--sp-3); }
+.st-lib__head { display: grid; gap: var(--sp-2); }
+.st-lib__head h2, .st-props h2 { font-size: var(--fs-md); }
+.st-props { border-left: var(--bw) solid var(--c-border); }
+.st-center { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.st-toolbar { display: flex; align-items: center; gap: var(--sp-1); padding: 6px var(--sp-2); background: var(--c-panel); border-bottom: var(--bw) solid var(--c-border); flex-wrap: wrap; }
+.st-toolbar select { width: auto; min-height: 26px; font-size: var(--fs-sm); }
+.st-canvas-wrap { flex: 1; overflow: auto; background: var(--c-workspace); }
+.st-canvas { display: block; }
+.st-canvas:focus-visible { outline: 2px solid var(--c-accent); outline-offset: -2px; box-shadow: none; }
+.st-assets, .st-pick { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
+.st-pick { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); max-height: 60vh; overflow: auto; }
+.st-asset { display: grid; gap: 2px; width: 100%; padding: var(--sp-2); text-align: left; background: var(--c-panel-sunken); border: var(--bw) solid var(--c-border); border-radius: var(--radius-sm); cursor: pointer; font: inherit; color: inherit; }
+.st-asset:hover { border-color: var(--c-accent); }
+.st-asset.is-added { border-color: var(--c-accent); background: var(--c-accent-soft); }
+.st-asset img { height: 40px; width: 100%; object-fit: contain; background: var(--c-panel); }
+.st-asset span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-2); }
+.st-grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--sp-2); }
+.st-grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--sp-2); }
+.st-ellist { margin: 0; padding-left: 1.4em; display: grid; gap: 2px; font-size: var(--fs-sm); }
+.st-ellist .btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; justify-content: flex-start; }
+.st-ellist .btn.is-on { background: var(--c-accent-soft); color: var(--c-accent); }
+.st-props .divider { margin: var(--sp-4) 0; }
+
+/* ----- Settings ----- */
+.set-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: var(--sp-4); align-items: start; }
+.set-adapter { padding-bottom: var(--sp-3); border-bottom: var(--bw) solid var(--c-border); }
+.set-adapter:last-of-type { border-bottom: 0; }
+
+@media (max-width: 1100px) {
+  .ds-grid, .ex-grid { grid-template-columns: 1fr; }
+  .ds-form { position: static; }
+  .st { grid-template-columns: 1fr; grid-template-rows: auto 70vh auto; height: auto; }
+  .st-lib { border-right: 0; border-bottom: var(--bw) solid var(--c-border); max-height: 260px; }
+  .st-props { border-left: 0; border-top: var(--bw) solid var(--c-border); }
+}
+@media (min-width: 1101px) { .view--fill .st { flex: 1; height: auto; } }
+@media (max-width: 760px) {
+  .ds-kpis { grid-template-columns: repeat(2, 1fr); }
+  .ex-adapters, .set-grid { grid-template-columns: 1fr; }
+  .ex-ab { grid-template-columns: 1fr; }
+}
