@@ -377,13 +377,18 @@ async function renderPage(root, sourceId) {
     const defs = svg('defs', {}, svg('pattern', { id: 'omit-hatch', patternUnits: 'userSpaceOnUse', width: label, height: label, patternTransform: 'rotate(45)' },
       svg('rect', { width: label, height: label, class: 'an-hatch-bg' }), svg('line', { x1: 0, y1: 0, x2: 0, y2: label, class: 'an-hatch-line', 'stroke-width': label / 3 })));
     const nodes = [];
-    for (const r of regions) {
+    // Lines first so the words inside them sit on top and get the tap.
+    for (const r of [...regions].sort((a, b) => (a.kind === 'line' ? 0 : 1) - (b.kind === 'line' ? 0 : 1))) {
       if (r.cls === 'omitted') continue;
       const isRuling = r.cls === 'printed_ruling';
       const excluded = r.status === 'excluded';
       if (isRuling ? !layers.ruling : excluded ? !layers.excluded : !(r.kind === 'word' ? layers.word : r.kind === 'line' ? layers.line : true)) continue;
       const cls = ['an-box', isRuling ? 'an-box--ruling' : excluded ? 'an-box--excluded' : `an-box--${r.kind}`, r.status === 'approved' ? 'an-box--approved' : ''];
-      nodes.push(svg('rect', { x: r.x, y: r.y, width: r.w, height: r.h, class: cls.join(' ') }, svg('title', { text: `${r.kind} · ${r.cls} · ${r.status}${r.text ? ` · “${r.text}”` : ''}` })));
+      const box = svg('rect', { x: r.x, y: r.y, width: r.w, height: r.h, class: [...cls, isRuling ? '' : 'an-box--link'].join(' ') },
+        svg('title', { text: `${r.kind} · ${r.cls} · ${r.status}${r.text ? ` · “${r.text}”` : ''}${isRuling ? '' : ' · tap to fix in Review'}` }));
+      // Boxes are changed in Review: tapping one opens it there, selected and zoomed.
+      if (!isRuling) box.addEventListener('click', () => { if (!omitMode) location.hash = `#/review?source=${sourceId}&region=${r.id}`; });
+      nodes.push(box);
     }
     if (layers.omitted && analysis) {
       for (const a of analysis.omitted_areas) {
@@ -537,7 +542,8 @@ async function renderPage(root, sourceId) {
         } }, icon('refresh'), 'Re-detect regions'),
         h('a', { class: 'btn', href: `#/review?source=${sourceId}` }, icon('review'), 'Review this page'))),
     h('div', { class: 'page-body page-detail' },
-      h('section', { class: 'stack' }, h('div', { class: 'row row--between' }, views, h('div', { class: 'row' }, status, omitBtn)), omitHint, stage, legend),
+      h('section', { class: 'stack' }, h('div', { class: 'row row--between' }, views, h('div', { class: 'row' }, status, omitBtn)), omitHint, stage, legend,
+        h('p', { class: 'small muted', text: 'To fix a box, tap it: it opens in Review, where you drag its corners, split, merge or delete it.' })),
       h('aside', { class: 'stack' },
         h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'What the app did with this page' })),
           h('div', { class: 'panel__body' }, summary)),
