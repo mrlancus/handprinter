@@ -53,9 +53,9 @@ function adapterCard(a, reload) {
       ready ? h('span', { class: 'badge badge--ok' }, icon('check'), 'Ready') : h('span', { class: 'badge badge--review' }, icon('alert'), 'Blocked')),
     h('div', { class: 'panel__body stack' },
       h('ul', { class: 'ex-checks', role: 'list' }, Object.entries(a.checks).map(([k, ok]) => h('li', {}, h('span', { class: ok ? 'ex-ok' : 'ex-no', 'aria-hidden': 'true' }, icon(ok ? 'check' : 'x')), h('span', {}, k.replaceAll('_', ' ')), h('span', { class: 'sr-only', text: ok ? 'yes' : 'no' })))),
-      a.blockers.length ? h('div', { class: 'callout callout--review' }, icon('alert'), h('div', { class: 'stack' },
-        h('ul', { class: 'ex-blockers' }, a.blockers.map((/** @type {string} */ b) => h('li', { text: b }))),
-        a.next_step ? h('p', {}, h('strong', { text: 'Next step: ' }), a.next_step) : null)) : null,
+      a.next_step ? h('div', { class: 'callout callout--review' }, icon('right'), h('p', {}, h('strong', { text: 'Next step: ' }), a.next_step)) : null,
+      a.blockers.length ? h('div', { class: 'stack' }, h('h4', { text: 'Blocked by' }),
+        h('ul', { class: 'ex-blockers small' }, a.blockers.map((/** @type {string} */ b) => h('li', { text: b })))) : null,
       h('dl', { class: 'facts' },
         h('dt', { text: 'Levels' }), h('dd', { text: caps.levels.join(', ') }),
         h('dt', { text: 'Characters' }), h('dd', { text: caps.charset_note }),
@@ -70,11 +70,11 @@ function adapterCard(a, reload) {
 /** @param {any[]} ready @param {any[]} profiles @param {any} prompts */
 function generatePanel(ready, profiles, prompts) {
   if (!ready.length) {
-    return setupState({
+    return h('section', { class: 'panel' }, setupState({
       title: 'Generation is not available yet',
       body: 'No model adapter is ready on this machine, so nothing can be generated or compared. Studio still works with imported images and approved crops.',
       steps: ['Export an approved snapshot in Dataset.', 'Set up an adapter environment (see the blockers above and docs/model-experiments.md).', 'Create a style profile from the snapshot.', 'Run the baseline on the fixed prompt set.'],
-    });
+    }));
   }
   const adapter = /** @type {HTMLSelectElement} */ (h('select', {}, ready.map((a) => h('option', { value: a.name }, a.title))));
   const level = /** @type {HTMLSelectElement} */ (h('select', {}, h('option', { value: 'word' }, 'Words'), h('option', { value: 'line' }, 'Short lines')));

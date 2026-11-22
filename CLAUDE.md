@@ -60,4 +60,4 @@ python -m handprinter run          # http://127.0.0.1:8765
 
 ## Current status
 
-See [docs/status.md](docs/status.md).
+Core release implemented and fixture-verified; live Haiku recognition verified once on a fixture page; model adapters blocked on GPU environment/weights. Details and next steps: [docs/status.md](docs/status.md). Performance: [docs/performance.md](docs/performance.md).

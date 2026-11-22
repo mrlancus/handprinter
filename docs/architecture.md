@@ -100,7 +100,7 @@ Manifest item: `item_id`, `image` (relative), `image_sha256`, `width`, `height`,
 
 Import: schema validation (`jsonschema`), item ID and sha256 must match the manifest, boxes are mapped back through `to_source`, word text is aligned to local boxes (`recognition/align.py`, DP with merge/split moves and a width cost; ambiguity is flagged, never zipped). Valid results become proposals; invalid/missing items stay `pending` with the reason and can be repackaged alone. Cache key = sha256(image) + model + prompt version + settings; cached items are skipped unless forced.
 
-Claude Code side: `.claude/agents/handwriting-recogniser.md` (`model: haiku`, `tools: Read, Write`) and `.claude/skills/recognise/SKILL.md`. Optional headless mode runs `claude -p --agent handwriting-recogniser --tools Read,Write --allowedTools Read,Write --add-dir <job-dir> --output-format json` per chunk when `doctor` confirms `claude auth status` reports `loggedIn`.
+Claude Code side: `.claude/agents/handwriting-recogniser.md` (`model: haiku`, `tools: Read, Write`) and `.claude/skills/recognise/SKILL.md`. Optional headless mode runs `claude -p` per chunk with the agent passed inline (`--agents`, `--agent handwriting-recogniser`, `--model haiku`, `--tools Read,Write`, `--disallowedTools Bash,Edit,WebFetch,WebSearch`, `--permission-mode acceptEdits`, `--output-format json`) and **cwd set to the package directory**, so writes cannot reach the repository. It only runs when `doctor` confirms `claude auth status` reports `loggedIn`. Import also refuses manifest entries that differ from what the app recorded when packaging.
 
 ## Model adapters
 
@@ -113,5 +113,6 @@ Claude Code side: `.claude/agents/handwriting-recogniser.md` (`model: haiku`, `t
 - **Crops skip lighting normalisation** to keep faint ink faithful; this means training crops may show uneven paper. Open: offer a per-snapshot "normalised" variant.
 - **Polling vs SSE.** Polling at 1 s only while jobs run is simpler and survives server restarts; SSE can replace it without API changes.
 - **Region revisions store full snapshots** (small rows) rather than diffs: simple undo and audit at the cost of some space.
-- Open: grouping heuristic for near-duplicates (dHash Hamming ≤ 6) needs tuning on real photos.
+- **Canonical split.** `source_splits` persists each page's split; later snapshots extend it to new pages only, so experiments share one split. Group keys are the smallest member source ID.
+- Open: near-duplicates require a 256-bit dHash within 24 bits AND ink-layout IoU ≥ 0.6. Same-template synthetic pages can still link (safe for leakage, coarser splits; snapshots warn when one group dominates). Needs tuning on real photos.
 - Open: whether Eruku fine-tuning is feasible on an RTX 2060 (likely not without LoRA/frozen backbone).

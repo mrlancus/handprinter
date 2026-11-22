@@ -44,19 +44,22 @@ export async function render(root, params) {
   };
 
   root.classList.add('view--fill');
-  const queueEl = h('aside', { class: 'rv-queue', 'aria-label': 'Review queue' });
+  const queueEl = h('aside', { class: 'rv-queue', id: 'rv-queue', 'aria-label': 'Review queue' });
   const wsEl = h('section', { class: 'rv-ws', 'aria-label': 'Page workspace' });
   const inspEl = h('aside', { class: 'rv-insp', 'aria-label': 'Inspector' });
   const saveEl = h('span', { class: 'rv-save xs', role: 'status', 'aria-live': 'polite' });
   mount(root,
     h('header', { class: 'page-head page-head--compact' },
       h('div', {}, h('h1', { text: 'Review' }), h('p', { class: 'small muted', text: 'Machine proposals are suggestions. Your corrections are kept unless you explicitly apply a proposal.' })),
-      h('div', { class: 'row' }, saveEl, h('button', { class: 'btn btn--quiet btn--sm', type: 'button', onClick: showHelp }, h('kbd', { text: '?' }), 'Shortcuts'))),
+      h('div', { class: 'row' }, saveEl,
+        h('a', { class: 'btn btn--sm rv-jump', href: '#rv-queue', onClick: (/** @type {Event} */ e) => { e.preventDefault(); queueEl.scrollIntoView({ behavior: 'smooth' }); } }, icon('review'), 'Queue'),
+        h('button', { class: 'btn btn--quiet btn--sm rv-help', type: 'button', onClick: showHelp }, h('kbd', { text: '?' }), 'Shortcuts'))),
     h('div', { class: 'rv' }, queueEl, wsEl, inspEl));
 
   // ---------- data ----------
   async function loadQueue() {
     mount(queueEl, queueControls(), loadingState(4));
+    if (!state.page) { mount(wsEl, h('div', { class: 'rv-ws__loading' }, loadingState(1))); mount(inspEl, loadingState(5)); }
     try {
       if (state.audit) {
         const data = await api(`/api/audit?n=30`);
@@ -440,7 +443,9 @@ export async function render(root, params) {
   function drawInspector() {
     const r = current();
     if (!r) {
-      mount(inspEl, state.page ? emptyState({ title: 'Select a region', icon: 'review', body: h('p', {}, 'Click an outline on the page, or press ', h('kbd', { text: 'J' }), ' for the next item in the queue.') }) : null);
+      mount(inspEl, emptyState({ title: state.page ? 'Select a region' : 'Inspector', icon: 'review',
+        body: state.page ? h('p', {}, 'Click an outline on the page, or press ', h('kbd', { text: 'J' }), ' for the next item in the queue.')
+          : 'Transcription, decisions and provenance for the selected region appear here.' }));
       return;
     }
     const textInput = /** @type {HTMLInputElement} */ (h('input', { type: 'text', class: 'input-text-large', value: r.text ?? '', id: 'rv-text', spellcheck: 'false', autocomplete: 'off',

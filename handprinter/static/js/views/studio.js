@@ -72,7 +72,7 @@ export async function render(root) {
           ? h('ul', { class: 'st-assets', role: 'list' }, list.map((/** @type {any} */ a) => h('li', {},
               h('button', { class: 'st-asset', type: 'button', title: `Add “${a.label}” to the page`, onClick: () => addElement(a) },
                 h('img', { src: `/api/studio/assets/${a.id}/image`, alt: '', loading: 'lazy' }),
-                h('span', { class: 'xs', text: a.label }), h('span', { class: 'xs faint', text: a.kind === 'upload' ? 'imported' : a.kind })))))
+                h('span', { class: 'xs', text: a.label }), a.kind === 'region' ? null : h('span', { class: 'xs faint', text: a.kind === 'upload' ? 'imported' : 'generated' })))))
           : emptyState({ title: 'No images yet', icon: 'studio', body: 'Import handwriting images, add approved crops from Review, or use generated output once a model is set up. No model is needed.' }));
     } catch (err) { mount(library, errorState(err, loadLibrary)); }
   }

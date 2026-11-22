@@ -71,8 +71,7 @@ function adapters(d) {
     h('div', { class: 'panel__body stack' },
       Object.values(d.adapters).map((/** @type {any} */ a) => h('div', { class: 'stack set-adapter' },
         h('div', { class: 'row' }, h('strong', { text: a.title }), a.state === 'ready' ? h('span', { class: 'badge badge--ok', text: 'ready' }) : h('span', { class: 'badge badge--review', text: 'blocked' })),
-        a.blockers.length ? h('ul', { class: 'ex-blockers small' }, a.blockers.map((/** @type {string} */ b) => h('li', { text: b }))) : null,
-        a.next_step ? h('p', { class: 'small' }, h('strong', { text: 'Next: ' }), a.next_step) : null)),
+        a.blockers.length ? h('p', { class: 'small muted', text: `${a.blockers.length} blocker${a.blockers.length > 1 ? 's' : ''}; details and next step in Experiments.` }) : null)),
       h('p', { class: 'xs muted' }, 'Each model runs in its own Python environment (PyTorch is never installed into the app). See ', h('code', { text: 'docs/model-experiments.md' }), '.')));
 }
 

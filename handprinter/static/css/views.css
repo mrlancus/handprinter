@@ -223,3 +223,29 @@
   .ex-adapters, .set-grid { grid-template-columns: 1fr; }
   .ex-ab { grid-template-columns: 1fr; }
 }
+
+/* ----- Round 1 visual review fixes ----- */
+.panel__head { flex-wrap: wrap; }
+.page-body > .state, .page-body > .panel > .state { padding: var(--sp-5); }
+.page-card__meta { grid-template-rows: auto auto minmax(22px, auto); align-content: start; }
+.rv-item__crop { max-height: 28px; }
+.rv-jump { display: none; }
+.rv-ws__loading { padding: var(--sp-5); }
+.ex-adapters { grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); }
+.ex-adapters > *, .ex-grid > *, .ds-grid > *, .set-grid > * { min-width: 0; }
+.ex-blockers, .facts dd, .callout { overflow-wrap: anywhere; }
+.set-grid { display: block; columns: 3 360px; column-gap: var(--sp-4); }
+.set-grid > .panel { break-inside: avoid; margin-bottom: var(--sp-4); }
+@media (max-width: 1100px) {
+  .rv-jump { display: inline-flex; }
+  .rv-actions { position: sticky; bottom: 0; z-index: 2; padding: var(--sp-2) 0; background: var(--c-panel); border-top: var(--bw) solid var(--c-border); }
+}
+@media (max-width: 760px), (hover: none) {
+  .rv-help { display: none; }
+}
+@media (max-width: 760px) {
+  .rv { grid-template-rows: 58vh auto auto; }
+  .st-lib { max-height: none; }
+  .st-assets { grid-auto-flow: column; grid-template-columns: none; grid-auto-columns: 132px; overflow-x: auto; padding-bottom: var(--sp-1); }
+  .st-toolbar .btn--primary { order: 10; width: 100%; }
+}

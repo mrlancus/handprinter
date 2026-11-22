@@ -68,7 +68,10 @@ async function route() {
     if (seq !== renderSeq) return;
     cleanup = await view.render(container, new URLSearchParams(query), path.slice(1));
   } catch (err) {
-    if (seq === renderSeq) mount(container, errorState(err, route));
+    if (seq === renderSeq) {
+      mount(container, h('header', { class: 'page-head' }, h('h1', { text: NAV.find((n) => n.id === viewId)?.label || 'Handprinter' })),
+        h('div', { class: 'page-body' }, errorState(err, route)));
+    }
   }
   document.title = `${NAV.find((n) => n.id === viewId)?.label || ''} · Handprinter`;
 }

@@ -159,3 +159,15 @@ def test_marks_become_separate_regions(conn, store, built):
     assert len(marks) == 1 and marks[0]["cls"] == "strike_through" and marks[0]["status"] == "needs_review"
     s = line["to_source"]
     assert marks[0]["x"] == pytest.approx(s["offset_x"] + 10 * s["scale_x"], abs=0.01)
+
+
+def test_headless_command_is_confined_and_pinned(settings, tmp_path):
+    from handprinter.recognition import headless
+
+    cmd = headless.build_command("claude", settings, tmp_path, ["i0001"])
+    assert cmd[cmd.index("--model") + 1] == "haiku"
+    assert cmd[cmd.index("--tools") + 1] == "Read,Write"
+    assert "Bash" in cmd[cmd.index("--disallowedTools") + 1]
+    assert "--add-dir" not in cmd and "--dangerously-skip-permissions" not in cmd
+    agents = json.loads(cmd[cmd.index("--agents") + 1])
+    assert agents["handwriting-recogniser"]["model"] == "haiku"

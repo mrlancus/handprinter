@@ -388,7 +388,7 @@ async function renderPage(root, sourceId) {
           const job = await trackJob(job_id);
           toast(job.status === 'succeeded' ? `Detection: ${job.result.lines} lines, ${job.result.words} words proposed (untouched proposals replaced; edited ones kept).` : `Detection failed: ${job.error}`, job.status === 'succeeded' ? 'info' : 'error');
         } }, icon('refresh'), 'Re-detect regions'),
-        h('a', { class: 'btn btn--primary', href: `#/review?source=${sourceId}` }, icon('review'), 'Review this page'))),
+        h('a', { class: 'btn', href: `#/review?source=${sourceId}` }, icon('review'), 'Review this page'))),
     h('div', { class: 'page-body page-detail' },
       h('section', { class: 'stack' }, h('div', { class: 'row row--between' }, views, status), stage),
       h('aside', { class: 'stack' },

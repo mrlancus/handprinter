@@ -154,15 +154,20 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
                 args.append(val)
         sql_where = " AND ".join(where)
         total = conn.execute(f"SELECT COUNT(*) FROM sources s WHERE {sql_where}", args).fetchone()[0]
-        rows = conn.execute(
-            f"""SELECT s.*, (SELECT COUNT(*) FROM regions r WHERE r.source_id = s.id AND r.deleted = 0 AND r.kind IN ('word','line')) AS n_regions,
-                       (SELECT COUNT(*) FROM regions r WHERE r.source_id = s.id AND r.deleted = 0 AND r.status = 'needs_review') AS n_review,
-                       (SELECT COUNT(*) FROM regions r WHERE r.source_id = s.id AND r.deleted = 0 AND r.status = 'approved') AS n_approved
-                FROM sources s WHERE {sql_where} ORDER BY s.created_at DESC, s.id LIMIT ? OFFSET ?""",
-            args + [limit, offset],
-        ).fetchall()
+        rows = conn.execute(f"SELECT s.* FROM sources s WHERE {sql_where} ORDER BY s.created_at DESC, s.id LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+        ids = [r["id"] for r in rows]
+        counts = {r["source_id"]: r for r in conn.execute(
+            f"""SELECT source_id, SUM(kind IN ('word','line')) AS n_regions, SUM(status = 'needs_review') AS n_review,
+                       SUM(status = 'approved') AS n_approved
+                FROM regions WHERE deleted = 0 AND source_id IN ({','.join('?' * len(ids)) or "''"}) GROUP BY source_id""", ids)}
+        items = []
+        for r in rows:
+            item = row_dict(r, pages.SOURCE_JSON)
+            c = counts.get(r["id"])
+            item.update(n_regions=(c["n_regions"] if c else 0) or 0, n_review=(c["n_review"] if c else 0) or 0, n_approved=(c["n_approved"] if c else 0) or 0)  # type: ignore[union-attr]
+            items.append(item)
         sessions = [r[0] for r in conn.execute("SELECT DISTINCT session FROM sources WHERE deleted = 0 AND session IS NOT NULL ORDER BY session")]
-        return {"total": total, "items": [row_dict(r, pages.SOURCE_JSON) for r in rows], "sessions": sessions}
+        return {"total": total, "items": items, "sessions": sessions}
 
     @app.get("/api/sources/{source_id}")
     def get_source(source_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
