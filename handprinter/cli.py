@@ -34,13 +34,51 @@ def cmd_run(settings: Settings) -> int:
         return 2
     proc = multiprocessing.Process(target=_worker, args=(settings,), name="handprinter-worker", daemon=False)
     proc.start()
-    print(f"Handprinter: http://{settings.host}:{settings.port}  (data: {settings.data_dir}; worker pid {proc.pid})")
+    print(f"Handprinter: http://{settings.host}:{settings.port}  (data: {settings.data_dir}; worker pid {proc.pid})"
+          + ("  [online: password required]" if settings.online else ""))
     try:
         _serve(settings)
     finally:
         proc.terminate()
         proc.join(timeout=15)
     return 0
+
+
+def cmd_online(settings: Settings) -> int:
+    """Run the app and publish it through a Cloudflare Tunnel, behind the sign-in password."""
+    import os
+
+    from handprinter import tunnel
+
+    binary = tunnel.find_cloudflared()
+    if not binary:
+        print("cloudflared is not installed. On Windows run:  winget install --id Cloudflare.cloudflared\n"
+              "then open a new terminal and start this again. Details: docs/online.md", file=sys.stderr)
+        return 2
+    if not settings.password:
+        print("Set HANDPRINTER_PASSWORD in .env first.", file=sys.stderr)
+        return 2
+    token = os.environ.get("HANDPRINTER_TUNNEL_TOKEN") or _dotenv_value("HANDPRINTER_TUNNEL_TOKEN")
+    public = os.environ.get("HANDPRINTER_PUBLIC_URL") or _dotenv_value("HANDPRINTER_PUBLIC_URL")
+
+    def show(url: str) -> None:
+        bar = "=" * (len(url) + 8)
+        print(f"\n{bar}\n    {url}\n{bar}\nOpen this on your iPad or phone and sign in with your password."
+              f"\nKeep this window open: closing it takes the site offline.\n", flush=True)
+
+    t = tunnel.Tunnel(settings, binary, token, public, show)
+    t.start()
+    print("Starting the Cloudflare tunnel (the address appears in a few seconds)...", flush=True)
+    try:
+        return cmd_run(settings)
+    finally:
+        t.stop()
+
+
+def _dotenv_value(key: str) -> str | None:
+    from handprinter.config import _load_dotenv
+
+    return _load_dotenv(Path.cwd() / ".env").get(key) or None
 
 
 def cmd_recognition(settings: Settings, args: argparse.Namespace) -> int:
@@ -105,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="handprinter", description="Local handwriting dataset and generation studio")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="start web server and worker (the normal launch command)")
+    sub.add_parser("online", help="run, and publish it online through a Cloudflare Tunnel behind a password")
     sub.add_parser("serve", help="start only the web server")
     sub.add_parser("worker", help="start only the background worker")
     doc = sub.add_parser("doctor", help="report OS, Python, GPU, decoders, Claude CLI and adapters")
@@ -116,7 +155,15 @@ def main(argv: list[str] | None = None) -> int:
     bak = sub.add_parser("backup", help="copy the database and data files to a folder")
     bak.add_argument("dest", type=Path)
     args = parser.parse_args(argv)
+    if args.command == "online":
+        import os
+
+        os.environ["HANDPRINTER_ONLINE"] = "1"
+        os.environ["HANDPRINTER_HOST"] = "127.0.0.1"  # only the tunnel reaches the server
+        get_settings.cache_clear()
     settings = get_settings()
+    if args.command == "online":
+        return cmd_online(settings)
 
     if args.command == "run":
         return cmd_run(settings)

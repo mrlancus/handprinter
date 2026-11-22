@@ -165,4 +165,4 @@ class CompositionSave(BaseModel):
 
 
 class LoginIn(BaseModel):
-    token: str
+    token: str = Field(max_length=200)

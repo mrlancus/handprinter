@@ -329,7 +329,7 @@ async function renderPage(root, sourceId) {
       const pts = corners || [[0, 0], [ww, 0], [ww, wh], [0, wh]];
       const poly = svg('polygon', { points: pts.map((p) => p.join(',')).join(' '), class: 'corner-poly' });
       const handles = pts.map((p, i) => {
-        const c = svg('circle', { cx: p[0], cy: p[1], r: Math.max(ww, wh) / 90, class: 'corner-handle', tabindex: 0, role: 'slider',
+        const c = svg('circle', { cx: p[0], cy: p[1], r: Math.max(ww, wh) / (window.matchMedia('(pointer: coarse)').matches ? 40 : 90), class: 'corner-handle', tabindex: 0, role: 'slider',
           'aria-label': `Corner ${['top left', 'top right', 'bottom right', 'bottom left'][i]}`, 'aria-valuetext': `${Math.round(p[0])}, ${Math.round(p[1])}` });
         c.addEventListener('pointerdown', (e) => {
           const el = /** @type {SVGCircleElement} */ (e.currentTarget);

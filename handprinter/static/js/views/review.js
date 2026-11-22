@@ -13,6 +13,8 @@ const CLASS_LABEL = /** @type {Record<string,string>} */ ({
   strike_through: 'Strike-through', overwrite: 'Overwrite', insertion: 'Insertion', diagram: 'Diagram', equation: 'Maths (LaTeX)', uncertain: 'Uncertain / other', omitted: 'Omitted area',
 });
 const QUEUE_SIZE = 50;
+/** Touch screens (iPad, phone): bigger handles, tap-to-multi-select. */
+const COARSE = window.matchMedia('(pointer: coarse)').matches;
 
 /** @typedef {{id: string, source_id: string, parent_id: string|null, kind: string, cls: string, x: number, y: number, w: number, h: number,
  *  status: string, deferred: number, text: string|null, text_origin: string|null, flags: string[], resolved_flags: string[], review_reason: string|null,
@@ -37,6 +39,7 @@ export async function render(root, params) {
     /** @type {string|null} */ selected: params.get('region'),
     /** @type {Set<string>} */ multi: new Set(),
     tool: 'select',
+    multiMode: false,
     drawKind: 'word',
     showOriginal: false,
     /** @type {Record<string, boolean>} */ show: { line: true, word: true, mark: true, block: true },
@@ -277,6 +280,9 @@ export async function render(root, params) {
         h('span', { class: 'ws__sep' }),
         btn('move', 'Select and move', () => setTool('select'), 'V', state.tool === 'select'),
         btn('draw', 'Draw a new region', () => setTool('draw'), 'N', state.tool === 'draw'),
+        h('button', { class: `btn btn--sm${state.multiMode ? ' is-on' : ''}`, type: 'button', 'aria-pressed': String(state.multiMode),
+          title: 'Tap outlines to select several, then Merge (same as shift-click)',
+          onClick: () => { state.multiMode = !state.multiMode; if (!state.multiMode) state.multi.clear(); drawToolbar(); draw(); drawInspector(); } }, icon('merge'), 'Select several'),
         state.tool === 'draw' ? h('select', { class: 'ws__drawkind', 'aria-label': 'Kind of region to draw', onChange: (/** @type {Event} */ e) => { state.drawKind = /** @type {HTMLSelectElement} */ (e.target).value; } },
           ['word', 'line', 'mark', 'block'].map((k) => h('option', { value: k, selected: k === state.drawKind ? true : undefined }, k))) : null,
         h('span', { class: 'ws__sep' }),
@@ -318,7 +324,7 @@ export async function render(root, params) {
       overlay.querySelectorAll('.rg-handle').forEach((n) => n.remove());
       const r = current();
       if (!r || !vp || state.tool !== 'select') return;
-      const s = 9 / vp.scale;
+      const s = (COARSE ? 24 : 9) / vp.scale;
       const pts = { nw: [r.x, r.y], ne: [r.x + r.w, r.y], se: [r.x + r.w, r.y + r.h], sw: [r.x, r.y + r.h] };
       for (const [name, [x, y]] of Object.entries(pts)) {
         overlay.appendChild(svg('rect', { x: x - s / 2, y: y - s / 2, width: s, height: s, class: `rg-handle rg-handle--${name}`, 'data-handle': name }));
@@ -333,8 +339,59 @@ export async function render(root, params) {
       apply();
     }, { passive: false });
 
+    // Touch: one finger pans / draws / moves; two fingers pinch-zoom and pan (iPad, phone).
+    /** @type {Map<number, {x: number, y: number}>} */
+    const touches = new Map();
+    /** @type {{dist: number, mid: {x:number,y:number}, scale: number, tx: number, ty: number} | null} */
+    let pinch = null;
+    const local = (/** @type {PointerEvent} */ e) => { const r = container.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+    function pinchState() {
+      const [a, b] = [...touches.values()];
+      return { dist: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+    }
+    function cancelDrag() {
+      if (drag?.rect) drag.rect.remove();
+      drag = null;
+      container.classList.remove('is-panning');
+      draw(); // put a half-moved outline back
+    }
     container.addEventListener('pointerdown', (e) => {
-      if (!vp || e.button !== 0) return;
+      if (e.pointerType === 'touch') {
+        touches.set(e.pointerId, local(e));
+        if (touches.size === 2 && vp) {
+          cancelDrag();
+          const p = pinchState();
+          pinch = { ...p, scale: vp.scale, tx: vp.tx, ty: vp.ty };
+          container.setPointerCapture(e.pointerId);
+          return;
+        }
+        if (touches.size > 2) return;
+      }
+    }, { capture: true });
+    container.addEventListener('pointermove', (e) => {
+      if (e.pointerType !== 'touch' || !touches.has(e.pointerId)) return;
+      touches.set(e.pointerId, local(e));
+      if (pinch && vp && touches.size === 2) {
+        e.stopImmediatePropagation();
+        const p = pinchState();
+        const scale = Math.min(40, Math.max(0.02, pinch.scale * (p.dist / pinch.dist)));
+        const fx = (pinch.mid.x - pinch.tx) / pinch.scale, fy = (pinch.mid.y - pinch.ty) / pinch.scale;
+        vp.scale = scale;
+        vp.tx = p.mid.x - fx * scale;
+        vp.ty = p.mid.y - fy * scale;
+        apply();
+      }
+    }, { capture: true });
+    const lift = (/** @type {PointerEvent} */ e) => {
+      if (e.pointerType !== 'touch') return;
+      touches.delete(e.pointerId);
+      if (pinch) { if (touches.size < 2) pinch = null; e.stopImmediatePropagation(); drag = null; }
+    };
+    container.addEventListener('pointerup', lift, { capture: true });
+    container.addEventListener('pointercancel', (e) => { lift(e); touches.delete(e.pointerId); if (drag) cancelDrag(); });
+
+    container.addEventListener('pointerdown', (e) => {
+      if (!vp || e.button !== 0 || pinch) return;
       const r = container.getBoundingClientRect();
       const v = { x: e.clientX - r.left, y: e.clientY - r.top };
       const f = vp.toFrame(v.x, v.y);
@@ -349,7 +406,7 @@ export async function render(root, params) {
         drag = { mode: 'resize', start: f, origin: cur && { ...cur }, handle: /** @type {HTMLElement} */ (/** @type {unknown} */ (target)).dataset.handle };
       } else if (target.classList.contains('rg')) {
         const id = /** @type {HTMLElement} */ (/** @type {unknown} */ (target)).dataset.id || '';
-        if (e.shiftKey) {
+        if (e.shiftKey || state.multiMode) {
           state.multi.has(id) ? state.multi.delete(id) : state.multi.add(id);
           if (state.selected) state.multi.add(state.selected);
           draw(); drawInspector();
@@ -366,7 +423,7 @@ export async function render(root, params) {
     });
 
     container.addEventListener('pointermove', (e) => {
-      if (!drag || !vp) return;
+      if (!drag || !vp || pinch) return;
       const r = container.getBoundingClientRect();
       const v = { x: e.clientX - r.left, y: e.clientY - r.top };
       const f = vp.toFrame(v.x, v.y);
@@ -446,7 +503,7 @@ export async function render(root, params) {
     const r = current();
     if (!r) {
       mount(inspEl, emptyState({ title: state.page ? 'Select a region' : 'Inspector', icon: 'review',
-        body: state.page ? h('p', {}, 'Click an outline on the page, or press ', h('kbd', { text: 'J' }), ' for the next item in the queue.')
+        body: state.page ? h('p', {}, COARSE ? 'Tap an outline on the page, or pick an item from the queue.' : 'Click an outline on the page, or press ', COARSE ? null : h('kbd', { text: 'J' }), COARSE ? null : ' for the next item in the queue.')
           : 'Transcription, decisions and provenance for the selected region appear here.' }));
       return;
     }
@@ -514,7 +571,7 @@ export async function render(root, params) {
       h('figure', { class: 'rv-crop' }, h('img', { src: `/api/regions/${r.id}/crop?rev=${r.revision}`, alt: `Crop of ${r.kind}` }),
         h('figcaption', { class: 'xs muted', text: `${Math.round(r.w)} × ${Math.round(r.h)} px, cut from the full-resolution page` })),
       h('label', { class: 'field' }, h('span', {}, isEquation ? 'LaTeX ' : 'Transcription ', h('span', { class: 'faint', text: '— exactly as written, mistakes included' })), textInput,
-        h('span', { class: 'xs muted' }, h('kbd', { text: 'Enter' }), ' save · ', h('kbd', { text: 'Ctrl' }), '+', h('kbd', { text: 'Enter' }), ' save and approve')),
+        h('span', { class: 'xs muted kbd-hint' }, h('kbd', { text: 'Enter' }), ' save · ', h('kbd', { text: 'Ctrl' }), '+', h('kbd', { text: 'Enter' }), ' save and approve')),
       mathPanel,
       r.flags.length ? h('div', { class: 'callout callout--review' }, icon('flag'), h('div', { class: 'stack' },
         h('strong', { text: 'Needs a decision' }), h('div', { class: 'row' }, r.flags.map(flagBadge)),
@@ -524,7 +581,10 @@ export async function render(root, params) {
         h('button', { class: 'btn btn--primary', type: 'button', onClick: () => approve(textInput.value) }, icon('check'), 'Approve', h('kbd', { text: 'A' })),
         h('button', { class: 'btn', type: 'button', onClick: () => decide('excluded') }, icon('x'), 'Exclude', h('kbd', { text: 'X' })),
         h('button', { class: 'btn', type: 'button', onClick: defer }, icon('defer'), 'Defer', h('kbd', { text: 'D' })),
-        h('button', { class: 'btn btn--quiet', type: 'button', onClick: undo, title: 'Undo the last change to this region' }, icon('undo'), 'Undo', h('kbd', { text: 'Ctrl Z' }))),
+        h('button', { class: 'btn btn--quiet', type: 'button', onClick: undo, title: 'Undo the last change to this region' }, icon('undo'), 'Undo', h('kbd', { text: 'Ctrl Z' })),
+        h('div', { class: 'rv-step' },
+          h('button', { class: 'btn', type: 'button', onClick: () => step(-1), 'aria-label': 'Previous item in the queue' }, icon('left'), 'Previous', h('kbd', { text: 'K' })),
+          h('button', { class: 'btn', type: 'button', onClick: () => step(1), 'aria-label': 'Next item in the queue' }, 'Next', icon('right'), h('kbd', { text: 'J' })))),
       reason,
       h('div', { class: 'rv-grid2' },
         h('label', { class: 'field' }, h('span', { text: 'Class' }), h('select', { onChange: (/** @type {Event} */ e) => { const cls = /** @type {HTMLSelectElement} */ (e.target).value; patch(r, { cls }, { cls }); } },
@@ -536,7 +596,7 @@ export async function render(root, params) {
         icon('person'), 'Someone else’s handwriting (never enters your dataset)'),
       h('div', { class: 'row' },
         h('button', { class: 'btn btn--sm', type: 'button', onClick: () => split(r) }, icon('split'), 'Split in half'),
-        h('button', { class: 'btn btn--sm', type: 'button', disabled: state.multi.size < 2, title: 'Shift-click outlines to select several', onClick: merge }, icon('merge'), state.multi.size >= 2 ? `Merge ${state.multi.size}` : 'Merge (shift-click)'),
+        h('button', { class: 'btn btn--sm', type: 'button', disabled: state.multi.size < 2, title: 'Shift-click outlines to select several', onClick: merge }, icon('merge'), state.multi.size >= 2 ? `Merge ${state.multi.size}` : COARSE ? 'Merge (Select several first)' : 'Merge (shift-click)'),
         h('button', { class: 'btn btn--sm btn--quiet btn--danger', type: 'button', onClick: () => remove(r) }, icon('trash'), 'Delete')),
       isMark ? markPanel(r) : null,
       proposals,

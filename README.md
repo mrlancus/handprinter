@@ -8,6 +8,10 @@ Everything runs and is stored on your computer. The only exception is images you
 - **Requirements:** see [docs/build-brief.md](docs/build-brief.md).
 - **Architecture:** see [docs/architecture.md](docs/architecture.md).
 
+## Use it from an iPad or phone
+
+Run `scripts\online.bat` instead of `run.bat`: it publishes the app through a free Cloudflare Tunnel behind a password. Step by step: [docs/online.md](docs/online.md).
+
 ## Quick start
 
 You need Python 3.11 or newer. A GPU, Claude Code and model weights are all optional.

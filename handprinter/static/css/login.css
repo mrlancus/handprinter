@@ -1,0 +1,9 @@
+/* Sign-in page (online or LAN mode). */
+.login { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: var(--sp-4); background: var(--c-canvas); }
+.login__card { width: min(380px, 100%); display: grid; gap: var(--sp-3); padding: var(--sp-6) var(--sp-5); background: var(--c-panel); border: var(--bw) solid var(--c-border); border-radius: var(--radius-md); box-shadow: var(--shadow-pop); text-align: center; }
+.login__icon { justify-self: center; border-radius: 14px; }
+.login__card h1 { font: var(--fw-regular) var(--fs-xl) var(--font-display); }
+.login__card form { text-align: left; }
+.login__card input { font-size: 18px; min-height: 48px; }
+.login__card .btn { min-height: 48px; font-size: 16px; }
+.login__error { color: var(--c-error); min-height: 1.4em; }

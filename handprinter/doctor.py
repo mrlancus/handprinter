@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from handprinter import imaging
+from handprinter import tunnel
 from handprinter.adapters import all_adapters
 from handprinter.config import Settings
 from handprinter.recognition.headless import cli_status
@@ -76,7 +77,9 @@ def report(settings: Settings) -> dict[str, Any]:
             "headless_enabled": settings.headless_recognition,
         },
         "adapters": {name: a.status().as_dict() for name, a in all_adapters(settings.adapter_env).items()},
-        "network": {"host": settings.host, "lan_mode": settings.lan_mode, "access_token_set": bool(settings.access_token)},
+        "network": {"host": settings.host, "lan_mode": settings.lan_mode, "access_token_set": bool(settings.access_token),
+                    "online": settings.online, "public_url": (tunnel.read_state(settings) or {}).get("url") if settings.online else None,
+                    "cloudflared": tunnel.find_cloudflared()},
     }
 
 
@@ -107,7 +110,8 @@ def format_report(data: dict[str, Any]) -> str:
         if st["next_step"]:
             lines.append(f"    next step: {st['next_step']}")
     net = data["network"]
-    lines.append(f"Network:        {net['host']} ({'LAN mode' if net['lan_mode'] else 'loopback only'})")
+    lines.append(f"Network:        {net['host']} ({'online via Cloudflare Tunnel' if net.get('online') else 'LAN mode' if net['lan_mode'] else 'loopback only'})")
+    lines.append(f"cloudflared:    {net.get('cloudflared') or 'not installed (only needed for online mode: winget install --id Cloudflare.cloudflared)'}")
     return "\n".join(lines)
 
 

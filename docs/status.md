@@ -38,6 +38,8 @@ Nothing has been verified with your real handwriting.
 | Blind A/B, run log, style profiles | implemented, fixtures for the API | Needs real generations from two adapters before it can be used. |
 | Page analysis ("What it found") and omitted areas | fixtures, browser-checked | `tests/test_omit.py`: exclusion and exact restore, detection ignores omitted ink, recognition images blanked, export excludes. Checked in Chromium at 1440 and 390 px. |
 | Maths as LaTeX (recognise, review, export, Studio) | fixtures, browser-checked | `tests/test_maths.py`. Prompt v2 asks Haiku for LaTeX; **not yet tried live on real handwritten maths.** MathJax renders under the strict CSP (its inline stylesheet is refused, harmlessly). Studio maths is typeset, not handwritten. |
+| Online mode (Cloudflare Tunnel + password) | fixtures, browser-checked locally | `tests/test_online.py`: tunnel traffic from loopback must sign in, default password 6892, cookie flags, per-visitor and global guess limits, no CDN caching, request token still needed, tunnel address parsing with a stand-in cloudflared. **A real Cloudflare tunnel was not run** (this build environment may not publish itself to the internet); first real run will be on your PC. |
+| iPad / phone touch support | browser-checked (Chromium iPad Pro 11 portrait + landscape, iPhone 13 emulation) | Pinch zoom and tap select verified with touch events; no sideways scrolling on any screen. **Not tested in real Safari/WebKit**; please report anything odd on the iPad. Add to Home Screen supported. |
 | Performance budgets | measured in the container | See `docs/performance.md` (10k regions). Re-measure on your desktop. |
 
 ## Live recognition run

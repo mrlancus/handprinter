@@ -212,11 +212,13 @@ export async function render(root) {
   canvas.addEventListener('pointerdown', (e) => {
     const r = canvas.getBoundingClientRect(), s = scale(), o = origin();
     const mx = (e.clientX - r.left - o.x) / s, my = (e.clientY - r.top - o.y) / s;
-    const hit = [...comp.elements].reverse().find((el) => mx >= el.x_mm && mx <= el.x_mm + el.w_mm + 6 / s && my >= el.y_mm && my <= el.y_mm + el.h_mm + 6 / s);
+    const slop = (window.matchMedia('(pointer: coarse)').matches ? 20 : 6) / s;
+    const hit = [...comp.elements].reverse().find((el) => mx >= el.x_mm && mx <= el.x_mm + el.w_mm + slop && my >= el.y_mm && my <= el.y_mm + el.h_mm + slop);
     canvas.focus();
     if (!hit) { selected = null; refresh(); return; }
     selected = hit.id;
-    const onHandle = Math.abs(mx - (hit.x_mm + hit.w_mm)) * s < 9 && Math.abs(my - (hit.y_mm + hit.h_mm)) * s < 9;
+    const grab = window.matchMedia('(pointer: coarse)').matches ? 22 : 9;
+    const onHandle = Math.abs(mx - (hit.x_mm + hit.w_mm)) * s < grab && Math.abs(my - (hit.y_mm + hit.h_mm)) * s < grab;
     commit();
     drag = { mode: onHandle ? 'resize' : 'move', id: hit.id, start: { x: mx, y: my }, orig: { ...hit } };
     canvas.setPointerCapture(e.pointerId);

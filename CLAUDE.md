@@ -14,6 +14,7 @@ Full requirements: [docs/build-brief.md](docs/build-brief.md). Hand-off state: [
 - Heavy work runs in the worker process, never in the web process.
 - Personal data, DBs, weights, packages, outputs and logs stay out of Git (data dir is outside the repo).
 - The app must work without GPU, Claude Code, real handwriting or model weights.
+- Online mode (Cloudflare Tunnel) trusts no client by address: every request needs the password session. Never add a loopback bypass there.
 
 ## Architecture (see [docs/architecture.md](docs/architecture.md))
 
@@ -56,6 +57,7 @@ python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"            # optional extras: ".[heic,pdf]"
 python -m handprinter doctor
 python -m handprinter run          # http://127.0.0.1:8765
+python -m handprinter online       # same + Cloudflare Tunnel + password (docs/online.md)
 ```
 
 ## Current status

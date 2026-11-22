@@ -15,6 +15,10 @@ browser (ES modules) ──HTTP/JSON──▶ web process (FastAPI, uvicorn, loo
 
 `python -m handprinter run` starts the web server and spawns the worker as a child process; `serve` and `worker` run them individually.
 
+## Online mode
+
+`python -m handprinter online` (or `scripts/online.bat`) runs the same two processes with `HANDPRINTER_ONLINE=1` and starts `cloudflared` (`handprinter/tunnel.py`): a quick tunnel (random `trycloudflare.com` address) or a named tunnel when `HANDPRINTER_TUNNEL_TOKEN` is set (passed via the environment, never argv). The tunnel connects from loopback, so in online mode **no client is trusted by address**: every page and API call needs the session cookie (HMAC of the password, `HttpOnly`, `Secure` over https, `SameSite=Lax`, 30 days); `/login`, `/api/login` and `/static/*` are public. Sign-in attempts are limited per visitor (`CF-Connecting-IP`, 5 per 15 min) and globally (20 per 24 h). API responses carry `cache-control: no-store` and `cdn-cache-control: no-store`. The per-start request token still guards every state change. Headless recognition defaults on, so recognition can be started from the iPad. See [online.md](online.md).
+
 ## Data model
 
 | Table | Purpose |

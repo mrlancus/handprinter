@@ -82,7 +82,11 @@ function storage(d) {
       h('dl', { class: 'facts' },
         h('dt', { text: 'Data directory' }), h('dd', { class: 'mono xs', text: d.data_dir }),
         h('dt', { text: 'Free space' }), h('dd', { text: `${d.disk_free_gb} GB` }),
-        h('dt', { text: 'Network' }), h('dd', { text: d.network.lan_mode ? `LAN mode on ${d.network.host} (token required)` : 'This computer only (127.0.0.1)' })),
+        h('dt', { text: 'Network' }), h('dd', { text: d.network.online ? 'Online through a Cloudflare Tunnel (password required)' : d.network.lan_mode ? `LAN mode on ${d.network.host} (token required)` : 'This computer only (127.0.0.1)' }),
+        d.network.online ? h('dt', { text: 'Web address' }) : null,
+        d.network.online ? h('dd', {}, d.network.public_url ? h('a', { href: d.network.public_url, class: 'mono xs', text: d.network.public_url }) : h('span', { class: 'muted', text: 'starting…' })) : null),
+      d.network.online || d.network.lan_mode ? h('button', { class: 'btn btn--sm', type: 'button', onClick: async () => { await api('/api/logout', { body: {} }); location.href = '/login'; } }, 'Sign out on this device') : null,
+      d.network.online ? null : h('p', { class: 'xs muted' }, 'To use it from an iPad or phone anywhere, start it with ', h('code', { text: 'scripts\\online.bat' }), '. See ', h('code', { text: 'docs/online.md' }), '.'),
       h('h4', { text: 'Backup' }),
       h('p', { class: 'small' }, 'Stop the app, then run ', h('code', { text: 'python -m handprinter backup D:\\handprinter-backup' }), '. It copies the SQLite database safely plus all images, crops, packages and snapshots. To restore, point ', h('code', { text: 'HANDPRINTER_DATA_DIR' }), ' at the backup folder (or copy it back).'),
       h('p', { class: 'xs muted', text: 'Nothing in the data directory is ever committed to Git.' })));

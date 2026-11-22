@@ -19,13 +19,13 @@ from PIL import Image
 
 from handprinter import dataset, doctor, evaluation, imaging, jobs, pages, review, studio
 from handprinter.adapters import all_adapters
-from handprinter.config import MAX_UPLOAD_BYTES, Settings
+from handprinter.config import MAX_UPLOAD_BYTES, ONLINE_MAX_UPLOAD_BYTES, Settings
 from handprinter.db import connect, dumps, init_db, new_id, now_iso, row_dict, transaction
 from handprinter.geometry import Box
 from handprinter.recognition import package as recpkg
 from handprinter.storage import Store, check_id
 from handprinter.web import schemas as S
-from handprinter.web.security import SESSION_COOKIE, make_guard, session_value
+from handprinter.web.security import SESSION_COOKIE, SESSION_MAX_AGE, LoginLimiter, client_key, is_https, make_guard, session_value
 
 STATIC_DIR = Path(str(resources.files("handprinter").joinpath("static")))
 REGION_JSON = review.JSON_FIELDS
@@ -73,12 +73,30 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def login_page() -> HTMLResponse:
         return HTMLResponse((STATIC_DIR / "login.html").read_text(encoding="utf-8"))
 
+    limiter = LoginLimiter()
+
     @app.post("/api/login")
-    def login(body: S.LoginIn) -> JSONResponse:
-        if not settings.lan_mode or not secrets.compare_digest(body.token, settings.access_token):
-            raise HTTPException(403, "invalid access token")
+    def login(body: S.LoginIn, request: Request) -> JSONResponse:
+        if not settings.login_required:
+            raise HTTPException(403, "sign-in is not used on this computer")
+        who = client_key(request)
+        wait = limiter.retry_after(who)
+        if wait:
+            minutes = max(1, round(wait / 60))
+            return JSONResponse({"detail": f"Too many wrong attempts. Try again in about {minutes} minute{'s' if minutes != 1 else ''}."},
+                                status_code=429, headers={"retry-after": str(wait)})
+        if not secrets.compare_digest(body.token.encode(), settings.secret.encode()):
+            limiter.failed(who)
+            raise HTTPException(403, "wrong password")
         resp = JSONResponse({"ok": True})
-        resp.set_cookie(SESSION_COOKIE, session_value(settings.access_token), httponly=True, samesite="strict")
+        resp.set_cookie(SESSION_COOKIE, session_value(settings.secret), httponly=True, samesite="lax",
+                        secure=is_https(request), max_age=SESSION_MAX_AGE, path="/")
+        return resp
+
+    @app.post("/api/logout")
+    def logout() -> JSONResponse:
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
 
     @app.get("/api/status")
@@ -89,12 +107,14 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             "data_dir": str(settings.data_dir),
             "decoders": {"heic": imaging.heif_available(), "pdf": imaging.pdf_available()},
             "lan_mode": settings.lan_mode,
+            "online": settings.online,
+            "login_required": settings.login_required,
             "counts": {
                 "sources": conn.execute("SELECT COUNT(*) FROM sources WHERE deleted = 0").fetchone()[0],
                 "needs_review": conn.execute("SELECT COUNT(*) FROM regions WHERE deleted = 0 AND status = 'needs_review'").fetchone()[0],
                 "active_jobs": conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0],
             },
-            "limits": {"max_upload_bytes": MAX_UPLOAD_BYTES},
+            "limits": {"max_upload_bytes": ONLINE_MAX_UPLOAD_BYTES if settings.online else MAX_UPLOAD_BYTES},
         }
 
     @app.get("/api/doctor")
