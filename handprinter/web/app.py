@@ -402,18 +402,20 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
 
     @app.get("/api/recognition/packages")
     def list_packages(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
-        return [dict(r) for r in conn.execute(
+        rows = [dict(r) for r in conn.execute(
             """SELECT p.*, SUM(i.status = 'pending') AS pending, SUM(i.status = 'failed') AS failed, SUM(i.status = 'succeeded') AS succeeded
                FROM recognition_packages p LEFT JOIN recognition_items i ON i.package_id = p.id
                GROUP BY p.id ORDER BY p.created_at DESC LIMIT 50""")]
+        for r in rows:
+            r["ready_to_import"] = recpkg.results_waiting(store, conn, r["id"]) if (r["pending"] or r["failed"]) else 0
+        return rows
 
     @app.get("/api/recognition/packages/{package_id}")
     def get_package(package_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         pkg = conn.execute("SELECT * FROM recognition_packages WHERE id = ?", (package_id,)).fetchone()
         if pkg is None:
             raise HTTPException(404, "package not found")
-        items = [dict(r) for r in conn.execute("SELECT * FROM recognition_items WHERE package_id = ? ORDER BY item_id", (package_id,))]
-        return {**dict(pkg), "items": items, "path": str(recpkg.package_dir(store, package_id))}
+        return {**dict(pkg), "items": recpkg.item_readings(conn, package_id), "path": str(recpkg.package_dir(store, package_id))}
 
     @app.post("/api/recognition/packages/{package_id}/import")
     def import_package(package_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:

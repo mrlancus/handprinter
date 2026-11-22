@@ -200,6 +200,37 @@ def load_manifest(store: Store, package_id: str) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def results_waiting(store: Store, conn: sqlite3.Connection, package_id: str) -> int:
+    """Result files written by the recogniser that have not been imported yet."""
+    folder = package_dir(store, package_id) / "results"
+    if not folder.is_dir():
+        return 0
+    open_items = {r["item_id"] for r in conn.execute(
+        "SELECT item_id FROM recognition_items WHERE package_id = ? AND status != 'succeeded'", (package_id,))}
+    return sum(1 for f in folder.glob("*.json") if f.stem in open_items)
+
+
+def item_readings(conn: sqlite3.Connection, package_id: str) -> list[dict[str, Any]]:
+    """Each item with its page and the text the recogniser read (once imported)."""
+    rows = conn.execute(
+        """SELECT i.item_id, i.status, i.error, i.context_type, i.source_id, i.region_id, s.original_filename,
+                  p.payload, p.applied, p.stale
+           FROM recognition_items i
+           LEFT JOIN sources s ON s.id = i.source_id
+           LEFT JOIN proposals p ON p.package_id = i.package_id AND p.item_id = i.item_id
+           WHERE i.package_id = ? ORDER BY i.item_id""", (package_id,)).fetchall()
+    out = []
+    for r in rows:
+        payload = json.loads(r["payload"]) if r["payload"] else {}
+        out.append({
+            "item_id": r["item_id"], "status": r["status"], "error": r["error"], "context_type": r["context_type"],
+            "source_id": r["source_id"], "region_id": r["region_id"], "page": r["original_filename"],
+            "text": payload.get("text"), "flags": payload.get("flags", []),
+            "applied": bool(r["applied"]) if r["payload"] else None, "stale": bool(r["stale"]) if r["payload"] else None,
+        })
+    return out
+
+
 def pending_packages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         """SELECT p.id, p.created_at, p.model_configured, p.item_count,

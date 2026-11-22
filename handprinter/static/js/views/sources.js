@@ -268,20 +268,48 @@ function recognitionTab(status) {
       mount(body,
         h('p', { class: 'small muted' }, `Configured recogniser: `, h('code', { text: status.recognition_model }), ` (pinned in .env and .claude/agents/handwriting-recogniser.md). Each result records the model it reports.`),
         h('div', { class: 'panel' }, h('table', { class: 'table' },
-          h('thead', {}, h('tr', {}, ['Package', 'Created', 'Model', 'Done', 'Pending', 'Failed', ''].map((t) => h('th', { class: ['Done', 'Pending', 'Failed'].includes(t) ? 'num' : undefined, text: t })))),
+          h('thead', {}, h('tr', {}, ['Package', 'Created', 'Model', 'Imported', 'Pending', 'Failed', ''].map((t) => h('th', { class: ['Imported', 'Pending', 'Failed'].includes(t) ? 'num' : undefined, text: t })))),
           h('tbody', {}, pkgs.map((/** @type {any} */ p) => h('tr', {},
-            h('td', {}, h('code', { text: p.id })), h('td', { class: 'xs', text: new Date(p.created_at).toLocaleString() }),
+            h('td', {}, h('button', { class: 'btn btn--sm btn--quiet', type: 'button', title: 'See what was read', onClick: () => showReadings(p.id) }, icon('review'), h('code', { text: p.id }))),
+            h('td', { class: 'xs', text: new Date(p.created_at).toLocaleString() }),
             h('td', { class: 'mono xs', text: p.model_configured }),
             h('td', { class: 'num', text: fmt(p.succeeded || 0) }),
-            h('td', { class: 'num' }, p.pending ? h('span', { class: 'badge', text: fmt(p.pending) }) : '0'),
+            h('td', { class: 'num' }, p.pending ? h('span', { class: 'badge', text: fmt(p.pending) }) : '0',
+              p.ready_to_import ? h('div', { class: 'xs', text: `${fmt(p.ready_to_import)} read, not imported` }) : null),
             h('td', { class: 'num' }, p.failed ? h('span', { class: 'badge badge--error', text: fmt(p.failed) }) : '0'),
             h('td', {}, h('div', { class: 'row' },
-              h('button', { class: 'btn btn--sm', type: 'button', onClick: () => runJob(`/api/recognition/packages/${p.id}/import`) }, 'Import results'),
+              h('button', { class: `btn btn--sm${p.ready_to_import ? ' btn--primary' : ''}`, type: 'button', onClick: () => runJob(`/api/recognition/packages/${p.id}/import`) }, p.ready_to_import ? `Import ${fmt(p.ready_to_import)} results` : 'Import results'),
               p.failed ? h('button', { class: 'btn btn--sm', type: 'button', onClick: () => api(`/api/recognition/packages/${p.id}/retry-failed`, { method: 'POST' }).then(() => { toast('Failed items reset to pending; run /recognise again.'); load(); }) }, 'Retry failed') : null,
               status.headless_recognition && p.pending ? h('button', { class: 'btn btn--sm', type: 'button', onClick: () => runJob(`/api/recognition/packages/${p.id}/headless`, {}) }, icon('play'), 'Run headless') : null))))))),
         status.headless_recognition ? null : h('p', { class: 'xs muted', text: 'Headless automation (claude -p) is off. Enable it with HANDPRINTER_HEADLESS_RECOGNITION=1 once doctor shows the claude CLI as logged in.' }));
     } catch (err) { mount(body, errorState(err, load)); }
   }
+  /** What the recogniser read, item by item, with links into Review. @param {string} id */
+  async function showReadings(id) {
+    const list = h('div', { class: 'stack' }, loadingState(2));
+    const dialog = /** @type {HTMLDialogElement} */ (h('dialog', { class: 'dialog dialog--wide' },
+      h('div', { class: 'dialog__head' }, h('h2', { text: 'What was read' }),
+        h('button', { class: 'btn btn--sm btn--quiet', type: 'button', onClick: () => dialog.close() }, 'Close')),
+      h('p', { class: 'small muted', text: 'Suggestions only: check and approve each line in Review.' }), list));
+    dialog.addEventListener('close', () => dialog.remove());
+    document.body.appendChild(dialog);
+    dialog.showModal();
+    try {
+      const pkg = await api(`/api/recognition/packages/${id}`);
+      const lines = pkg.items.filter((/** @type {any} */ it) => it.context_type !== 'page_overview');
+      const done = lines.filter((/** @type {any} */ it) => it.status === 'succeeded').length;
+      mount(list,
+        h('p', { class: 'small', text: `${done} of ${lines.length} line${lines.length === 1 ? '' : 's'} read and imported.` }),
+        h('table', { class: 'table' }, h('tbody', {}, lines.map((/** @type {any} */ it) => h('tr', {},
+          h('td', { class: 'xs muted', text: it.page || '' }),
+          h('td', {}, it.status === 'succeeded'
+            ? (it.text ? h('span', { class: 'mono', text: it.text }) : h('span', { class: 'muted', text: '(could not read)' }))
+            : h('span', { class: `badge${it.status === 'failed' ? ' badge--error' : ''}`, text: it.status === 'failed' ? `failed: ${it.error || ''}` : 'not read yet' }),
+            it.flags && it.flags.length ? h('span', { class: 'badge badge--review', text: 'needs a look' }) : null),
+          h('td', {}, it.region_id && it.status === 'succeeded' ? h('a', { href: `#/review?source=${it.source_id}&region=${it.region_id}`, onClick: () => dialog.close() }, 'Review') : null))))));
+    } catch (err) { mount(list, errorState(err)); }
+  }
+
   /** @param {string} url @param {any} [bodyJson] */
   async function runJob(url, bodyJson) {
     try {

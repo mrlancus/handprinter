@@ -112,6 +112,15 @@ def cmd_recognition(settings: Settings, args: argparse.Namespace) -> int:
     if args.action == "import":
         print(json.dumps(importer.import_package(conn, store, args.package_id), indent=2))
         return 0
+    if args.action == "show":
+        items = package.item_readings(conn, args.package_id)
+        if args.json:
+            print(json.dumps(items, indent=2, ensure_ascii=False))
+        else:
+            for it in items:
+                read = it["text"] if it["text"] is not None else ("(page layout)" if it["context_type"] == "page_overview" else "(nothing read)")
+                print(f"{it['item_id']}  {it['status']:<9}  {it['page'] or '?'}  {read}{'  [needs a look]' if it['flags'] else ''}")
+        return 0
     return 2
 
 
@@ -149,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     doc = sub.add_parser("doctor", help="report OS, Python, GPU, decoders, Claude CLI and adapters")
     doc.add_argument("--json", action="store_true")
     rec = sub.add_parser("recognition", help="recognition package helpers for Claude Code")
-    rec.add_argument("action", choices=["pending", "validate", "import"])
+    rec.add_argument("action", choices=["pending", "validate", "import", "show"])
     rec.add_argument("package_id", nargs="?")
     rec.add_argument("--json", action="store_true")
     bak = sub.add_parser("backup", help="copy the database and data files to a folder")

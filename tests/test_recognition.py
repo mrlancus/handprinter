@@ -171,3 +171,16 @@ def test_headless_command_is_confined_and_pinned(settings, tmp_path):
     assert "--add-dir" not in cmd and "--dangerously-skip-permissions" not in cmd
     agents = json.loads(cmd[cmd.index("--agents") + 1])
     assert agents["handwriting-recogniser"]["model"] == "haiku"
+
+
+def test_readings_list_what_was_read_and_waiting_results(conn, store, built):
+    sid, info, manifest = built
+    pkg = info["package_id"]
+    line = [e for e in manifest["items"] if e["context_type"] == "line"][0]
+    _write(store, pkg, line["item_id"], _result(line, transcription="the quick brown fox"))
+    assert package.results_waiting(store, conn, pkg) == 1  # read by the recogniser, not imported yet
+    importer.import_package(conn, store, pkg)
+    assert package.results_waiting(store, conn, pkg) == 0
+    readings = {r["item_id"]: r for r in package.item_readings(conn, pkg)}
+    assert readings[line["item_id"]]["text"] == "the quick brown fox" and readings[line["item_id"]]["status"] == "succeeded"
+    assert readings[line["item_id"]]["page"]
