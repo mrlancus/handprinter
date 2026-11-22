@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://handprinter.local/schemas/recognition-result-1.json",
+  "title": "Handprinter recognition result (one item)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "item_id", "image_sha256", "model", "region_type", "transcription", "uncertain_spans", "marks", "quality_flags", "review_reasons", "author_ambiguous"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "item_id": {"type": "string", "pattern": "^[a-z0-9_-]{1,64}$"},
+    "image_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "model": {"type": "string", "minLength": 1, "maxLength": 120},
+    "region_type": {"enum": ["handwriting", "printed_text", "printed_ruling", "underline", "strike_through", "overwrite", "insertion", "diagram", "equation", "uncertain", "mixed", "empty"]},
+    "transcription": {"type": ["string", "null"], "maxLength": 2000},
+    "uncertain_spans": {
+      "type": "array", "maxItems": 50,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["start", "end", "reason"],
+        "properties": {
+          "start": {"type": "integer", "minimum": 0},
+          "end": {"type": "integer", "minimum": 1},
+          "reason": {"type": "string", "maxLength": 200}
+        }
+      }
+    },
+    "marks": {
+      "type": "array", "maxItems": 50,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["type", "box", "target_text", "original_text_visible"],
+        "properties": {
+          "type": {"enum": ["underline", "strike_through", "overwrite", "insertion", "other"]},
+          "box": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/box"}]},
+          "target_text": {"type": ["string", "null"], "maxLength": 200},
+          "original_text_visible": {"type": "boolean"}
+        }
+      }
+    },
+    "quality_flags": {
+      "type": "array", "maxItems": 20, "uniqueItems": true,
+      "items": {"enum": ["blurry", "glare", "clipped", "low_contrast", "printed_text_present", "ruling_overlap", "cannot_read", "partial_word", "other_author_suspected"]}
+    },
+    "review_reasons": {"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 200}},
+    "author_ambiguous": {"type": "boolean"},
+    "regions": {
+      "type": "array", "maxItems": 200,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["box", "region_type"],
+        "properties": {
+          "box": {"$ref": "#/$defs/box"},
+          "region_type": {"enum": ["handwriting", "printed_text", "printed_ruling", "diagram", "equation", "uncertain"]},
+          "transcription": {"type": ["string", "null"], "maxLength": 2000}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "box": {
+      "type": "array", "description": "[x, y, width, height] in pixels of the item image",
+      "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number", "exclusiveMinimum": 0}, {"type": "number", "exclusiveMinimum": 0}],
+      "minItems": 4, "maxItems": 4
+    }
+  }
+}
