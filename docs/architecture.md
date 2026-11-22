@@ -84,6 +84,19 @@ unprocessed ──machine proposal (clean)──▶ proposed ──┐
 - Security middleware: Host must be loopback (or the configured LAN host), Origin (when present) must match, and every non-GET request needs the `X-Handprinter-Token` header matching the per-start token embedded in the page. LAN mode (`HANDPRINTER_HOST` non-loopback) refuses to start without `HANDPRINTER_ACCESS_TOKEN` and then requires a session cookie obtained with it. No CORS headers are emitted.
 - Lists are paginated (`limit ≤ 200`, keyset or offset with indexed columns).
 
+## Omitted areas
+
+A person can draw a box over anything that is not their handwriting (diagram, printed worksheet text, someone else's notes, scribbles). It is stored as a region: `kind = block`, `cls = omitted`, `status = excluded`, the reason in `review_reason`. Effects (`handprinter/pages.py`):
+
+- Detection zeroes the ink mask inside omitted areas, so no boxes are proposed there.
+- Regions at least 60% inside are excluded with `review_reason = omitted:<area id>` (approved regions are kept and reported). Restoring an area deletes it and returns each of those regions to its exact pre-omit status from `region_revisions`.
+- Recognition packages paint omitted areas flat grey in every image (overview and line context) before anything is written, and skip excluded word boxes.
+- `GET /api/sources/{id}/analysis` returns a plain-language account of the page (original, orientation, correction, duplicates, quality, detection, omitted areas, suggestions, training readiness). The page view ("What it found") draws it over the corrected image.
+
+## Maths (LaTeX)
+
+Maths is stored as LaTeX source in `regions.text`: a region with `cls = equation` holds bare LaTeX; handwriting text can contain inline `$...$` maths. Prompt v2 asks the recogniser for LaTeX (`$...$`, `region_type: equation` for maths-only targets); import flags any maths `contains_math` so a person always checks it, keeps `$...$` spans as single alignment tokens, and does not spread a maths-only line over word boxes. Approving `equation` needs LaTeX. Exports put maths in `maths.jsonl` + `maths/` (`format: latex | text+inline_latex`), sharing the page-grouped split but never entering the word vocabulary or unseen-word subset. The browser renders LaTeX with the vendored MathJax (`static/js/math.js`); Studio can add typeset maths as an image asset (typeset, not handwriting).
+
 ## Recognition package format
 
 `<data>/recognition/jobs/<job-id>/`

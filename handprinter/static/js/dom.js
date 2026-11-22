@@ -50,6 +50,7 @@ export function svg(tag, attrs = {}, ...children) {
   for (const [key, value] of Object.entries(attrs)) {
     if (value === undefined || value === null || value === false) continue;
     if (key.startsWith('on') && typeof value === 'function') el.addEventListener(key.slice(2).toLowerCase(), value);
+    else if (key === 'text') el.textContent = String(value);
     else el.setAttribute(key, String(value));
   }
   for (const c of children) el.appendChild(c);

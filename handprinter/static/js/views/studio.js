@@ -2,6 +2,7 @@
 import { api, upload } from '../api.js';
 import { h, isTyping, mount } from '../dom.js';
 import { icon } from '../components/icons.js';
+import { latexToPng, renderMath } from '../math.js';
 import { emptyState, errorState, loadingState } from '../components/states.js';
 import { toast } from '../app.js';
 
@@ -67,7 +68,8 @@ export async function render(root) {
           h('div', { class: 'row' },
             h('label', { class: 'btn btn--sm', for: 'st-upload' }, icon('upload'), 'Import images', fileInput),
             h('button', { class: 'btn btn--sm', type: 'button', onClick: pickApproved }, icon('plus'), 'Approved crops'),
-            h('button', { class: 'btn btn--sm', type: 'button', onClick: pickGenerated }, icon('plus'), 'Generated'))),
+            h('button', { class: 'btn btn--sm', type: 'button', onClick: pickGenerated }, icon('plus'), 'Generated'),
+            h('button', { class: 'btn btn--sm', type: 'button', onClick: mathsDialog }, icon('plus'), 'Maths (LaTeX)'))),
         list.length
           ? h('ul', { class: 'st-assets', role: 'list' }, list.map((/** @type {any} */ a) => h('li', {},
               h('button', { class: 'st-asset', type: 'button', title: `Add “${a.label}” to the page`, onClick: () => addElement(a) },
@@ -94,6 +96,41 @@ export async function render(root) {
         assets.set(a.id, a); btn.classList.add('is-added');
       } }, h('img', { src: `/api/regions/${r.id}/crop`, alt: '' }), h('span', { class: 'xs', text: r.text || '' })))))
       : emptyState({ title: 'No approved crops yet', body: 'Approve words or lines in Review first.' }));
+  }
+
+  /** Type LaTeX, preview it, and add it to the library as a typeset image. */
+  function mathsDialog() {
+    const dialog = /** @type {HTMLDialogElement} */ (h('dialog', { class: 'dialog', 'aria-labelledby': 'st-math-title' }));
+    const input = /** @type {HTMLTextAreaElement} */ (h('textarea', { rows: 3, class: 'mono', spellcheck: 'false', placeholder: 'e.g. x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}', 'aria-label': 'LaTeX' }));
+    const preview = h('div', { class: 'math-preview', 'aria-live': 'polite' });
+    const status = h('p', { class: 'xs muted', role: 'status' });
+    input.addEventListener('input', () => renderMath(preview, input.value, { whole: true }));
+    mount(dialog, h('div', { class: 'dialog__head' }, h('h2', { id: 'st-math-title', text: 'Add maths' }),
+      h('button', { class: 'btn btn--quiet btn--sm', type: 'button', 'aria-label': 'Close', onClick: () => dialog.close() }, icon('x'))),
+      h('div', { class: 'stack' },
+        h('label', { class: 'field' }, h('span', { text: 'LaTeX (no $ needed)' }), input),
+        preview,
+        h('p', { class: 'xs muted', text: 'This is typeset maths rendered locally with MathJax, not your handwriting. Handwritten-style maths needs a generation model trained on your maths examples.' }),
+        status,
+        h('div', { class: 'row' }, h('span', { class: 'spacer' }),
+          h('button', { class: 'btn', type: 'button', onClick: () => dialog.close() }, 'Cancel'),
+          h('button', { class: 'btn btn--primary', type: 'button', onClick: async () => {
+            const latex = input.value.trim();
+            if (!latex) return;
+            status.textContent = 'Rendering…';
+            try {
+              const png = await latexToPng(latex);
+              const a = await upload('/api/studio/assets', new File([png], 'maths.png', { type: 'image/png' }), () => {}, { label: `Maths: ${latex}`.slice(0, 120) });
+              assets.set(a.id, a);
+              dialog.close();
+              addElement(a);
+              loadLibrary();
+            } catch (err) { status.textContent = err instanceof Error ? err.message : String(err); }
+          } }, icon('plus'), 'Add to page'))));
+    document.body.appendChild(dialog);
+    dialog.addEventListener('close', () => dialog.remove());
+    dialog.showModal();
+    input.focus();
   }
 
   async function pickGenerated() {

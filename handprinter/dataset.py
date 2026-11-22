@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 import sqlite3
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -21,6 +22,12 @@ POLICIES = {
 }
 MARK_TARGET_CLASSES = ("underline", "strike_through", "overwrite", "insertion")
 EXPORT_SCHEMA_VERSION = "1"
+INLINE_MATH = re.compile(r"\$[^$]+\$")
+
+
+def is_maths(cls: str, text: str | None) -> bool:
+    """Maths is stored as LaTeX: a whole region classed `equation`, or `$...$` inside a handwriting line."""
+    return cls == "equation" or bool(text and INLINE_MATH.search(text))
 
 
 @dataclass
@@ -28,6 +35,7 @@ class Filters:
     source_types: tuple[str, ...] = ("paper",)
     style_eras: tuple[str, ...] = ("current",)
     sessions: tuple[str, ...] | None = None
+    include_maths: bool = True
 
 
 @dataclass
@@ -51,6 +59,7 @@ class Example:
     source_type: str
     revision: int
     row: dict[str, Any] = field(repr=False, default_factory=dict)
+    maths: bool = False
 
 
 def eligible_examples(conn: sqlite3.Connection, policy: str, filters: Filters) -> tuple[list[Example], Counter]:
@@ -73,7 +82,7 @@ def eligible_examples(conn: sqlite3.Connection, policy: str, filters: Filters) -
     rows = conn.execute(
         """SELECT r.*, s.group_id, s.session, s.source_type, s.style_era, s.near_duplicates, s.processing_rev AS src_rev
            FROM regions r JOIN sources s ON s.id = r.source_id
-           WHERE r.deleted = 0 AND s.deleted = 0 AND r.kind IN ('word', 'line')""",
+           WHERE r.deleted = 0 AND s.deleted = 0 AND (r.kind IN ('word', 'line') OR (r.kind = 'block' AND r.cls = 'equation'))""",
     ).fetchall()
     excluded: Counter = Counter()
     out = []
@@ -82,7 +91,8 @@ def eligible_examples(conn: sqlite3.Connection, policy: str, filters: Filters) -
         if reason:
             excluded[reason] += 1
             continue
-        out.append(Example(r["id"], r["kind"], r["text"], r["source_id"], r["group_id"], r["session"], r["source_type"], r["revision"], dict(r)))
+        out.append(Example(r["id"], r["kind"], r["text"], r["source_id"], r["group_id"], r["session"], r["source_type"], r["revision"], dict(r),
+                           maths=is_maths(r["cls"], r["text"])))
     return out, excluded
 
 
@@ -95,8 +105,10 @@ def _exclusion(r: sqlite3.Row, policy: str, filters: Filters, marked: set[str]) 
         return "session not selected"
     if r["other_author"]:
         return "someone else's handwriting"
-    if r["cls"] != "handwriting":
+    if r["cls"] not in ("handwriting", "equation"):
         return f"class {r['cls']}"
+    if not filters.include_maths and is_maths(r["cls"], r["text"]):
+        return "maths not selected"
     if r["id"] in marked:
         return "has an underline/correction mark (kept out of the clean set)"
     if r["processing_rev"] != r["src_rev"]:
@@ -210,6 +222,7 @@ def unseen_words(examples: list[Example], splits: dict[str, str], config: SplitC
     Only words whose instances can all be removed from train/val qualify. Returns
     (unseen vocabulary, region IDs dropped from train/val to keep them unseen).
     """
+    examples = [ex for ex in examples if not ex.maths]  # LaTeX is not a word vocabulary
     words = [ex for ex in examples if ex.kind == "word"]
     test_types = sorted({ex.text for ex in words if splits[ex.region_id] == "test"})
     rng = random.Random(config.seed)
@@ -230,13 +243,13 @@ def coverage(conn: sqlite3.Connection) -> dict[str, Any]:
         "SELECT status, COUNT(*) n FROM regions WHERE deleted = 0 AND kind IN ('word','line') GROUP BY status")}
     flagged = conn.execute("SELECT COUNT(*) FROM regions WHERE deleted = 0 AND flags != '[]' AND status != 'excluded'").fetchone()[0]
     examples, excluded = eligible_examples(conn, "approved_only", Filters())
-    by_kind = Counter(ex.kind for ex in examples)
-    chars = Counter(ch for ex in examples if ex.kind == "word" for ch in ex.text)
+    by_kind = Counter("maths" if ex.maths else ex.kind for ex in examples)
+    chars = Counter(ch for ex in examples if ex.kind == "word" and not ex.maths for ch in ex.text)
     marks = {r["cls"]: r["n"] for r in conn.execute("SELECT cls, COUNT(*) n FROM regions WHERE deleted = 0 AND kind = 'mark' GROUP BY cls")}
     return {
         "status": status, "flagged_open": flagged, "exportable": dict(by_kind),
         "excluded_reasons": dict(excluded.most_common()), "characters": dict(chars.most_common()),
-        "word_types": len({ex.text for ex in examples if ex.kind == "word"}), "marks": marks,
+        "word_types": len({ex.text for ex in examples if ex.kind == "word" and not ex.maths}), "marks": marks,
         "pages": conn.execute("SELECT COUNT(*) FROM sources WHERE deleted = 0").fetchone()[0],
         "pilot_target_words": [1000, 3000],
     }
@@ -253,9 +266,9 @@ def export_snapshot(
     vocab, dropped = unseen_words(examples, splits, config)
     snapshot_id = new_id("snap")
     root = store.dir("datasets") / snapshot_id
-    for sub in ("words", "lines"):
+    for sub in ("words", "lines", "maths"):
         (root / sub).mkdir(parents=True)
-    records: dict[str, list[dict[str, Any]]] = {"word": [], "line": []}
+    records: dict[str, list[dict[str, Any]]] = {"word": [], "line": [], "maths": []}
     items = []
     images = pages.WorkingImages(store)
     examples = sorted(examples, key=lambda e: (e.source_id, e.kind, e.region_id))
@@ -268,11 +281,15 @@ def export_snapshot(
         crop, _ = pages.region_crop(conn, store, region, images=images)
         data = imaging.png_bytes(crop)
         digest = sha256_bytes(data)
-        rel = f"{'words' if ex.kind == 'word' else 'lines'}/{ex.region_id}-r{ex.revision}.png"
+        bucket = "maths" if ex.maths else ex.kind
+        folder = {"word": "words", "line": "lines", "maths": "maths"}[bucket]
+        rel = f"{folder}/{ex.region_id}-r{ex.revision}.png"
         atomic_write(root / rel, data)
         split = splits[ex.region_id]
-        is_unseen = ex.kind == "word" and split == "test" and ex.text in vocab
-        records[ex.kind].append({
+        is_unseen = not ex.maths and ex.kind == "word" and split == "test" and ex.text in vocab
+        # Maths: `text` is LaTeX source. "latex" = the whole crop is maths; "text+inline_latex" = words with $...$ maths.
+        extra = {"format": "latex" if region["cls"] == "equation" else "text+inline_latex", "region_kind": ex.kind} if ex.maths else {}
+        records[bucket].append({**extra,
             "id": ex.region_id, "image": rel, "image_sha256": digest, "text": ex.text, "split": split,
             "unseen_word": is_unseen, "width": crop.width, "height": crop.height, "aspect": round(crop.width / crop.height, 5),
             "crop": {"frame": "processed", "x": region["x"], "y": region["y"], "w": region["w"], "h": region["h"],
@@ -282,14 +299,14 @@ def export_snapshot(
             "annotation_revision": ex.revision, "status": region["status"], "text_origin": region["text_origin"],
             "review": "human_approved" if region["status"] == "approved" else "unreviewed_machine_proposal",
         })
-        items.append((ex.region_id, ex.revision, ex.kind, split, int(is_unseen), digest))
+        items.append((ex.region_id, ex.revision, "maths" if ex.maths else ex.kind, split, int(is_unseen), digest))
     manifest_hash = hashlib.sha256()
-    for kind, fname in (("word", "words.jsonl"), ("line", "lines.jsonl")):
+    for kind, fname in (("word", "words.jsonl"), ("line", "lines.jsonl"), ("maths", "maths.jsonl")):
         body = "".join(json.dumps(r, ensure_ascii=False, sort_keys=True) + "\n" for r in records[kind]).encode("utf-8")
         atomic_write(root / fname, body)
         manifest_hash.update(body)
     counts = {
-        "words": len(records["word"]), "lines": len(records["line"]),
+        "words": len(records["word"]), "lines": len(records["line"]), "maths": len(records["maths"]),
         "splits": dict(Counter(r["split"] for k in records for r in records[k])),
         "unseen_words": sum(r["unseen_word"] for r in records["word"]), "unseen_vocabulary": len(vocab),
         "groups": len(set(groups.values())),
@@ -320,13 +337,17 @@ def _readme(meta: dict[str, Any]) -> str:
 
 Name: {meta['name']} · created {meta['created_at']} · policy `{meta['policy']}`: {meta['policy_description']}
 
-Immutable. Files: `words.jsonl`, `lines.jsonl` (UTF-8, one JSON object per line), `words/*.png`, `lines/*.png`
+Immutable. Files: `words.jsonl`, `lines.jsonl`, `maths.jsonl` (UTF-8, one JSON object per line), `words/*.png`, `lines/*.png`, `maths/*.png`
 (lossless crops at native resolution, never stretched), `snapshot.json` (configuration, counts, warnings).
 
 Fields: `id`, `image`, `image_sha256`, `text` (exactly as written), `split` (train/val/test, grouped by page,
 source group and near-duplicates), `unseen_word`, `width`, `height`, `aspect`, `crop` (box in the processed
 page frame), `source_id`, `line_id`, `group`, `source_type`, `session`, `style_era`, `annotation_revision`,
 `status`, `text_origin`, `review`.
+
+Maths (`maths.jsonl`, `maths/*.png`): `text` is LaTeX source as MathJax reads it. `format` is `latex` when the
+whole crop is maths (e.g. `\\frac{{a}}{{b}} = c`) or `text+inline_latex` for writing with `$...$` maths inside.
+Maths examples share the page-grouped split but are kept out of the word vocabulary and the unseen-word subset.
 
 Warnings: {'; '.join(meta['warnings']) or 'none'}
 """

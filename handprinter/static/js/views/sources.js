@@ -163,8 +163,10 @@ function importPanel(status, onImported) {
           const ok = entries.filter((/** @type {any} */ e) => e.status === 'imported').length;
           state.textContent = `${ok} of ${entries.length} imported`;
           state.className = ok === entries.length ? 'xs badge badge--ok' : 'xs badge badge--review';
-          mount(detail, entries.filter((/** @type {any} */ e) => e.status !== 'imported' || e.detail).map((/** @type {any} */ e) =>
-            h('li', {}, h('span', { class: `badge${e.status === 'rejected' ? ' badge--error' : e.status === 'imported' ? ' badge--review' : ''}`, text: e.status }), ' ', h('span', { class: 'mono xs', text: e.name }), e.detail ? h('span', { class: 'xs muted', text: ` — ${e.detail}` }) : null)));
+          mount(detail, entries.map((/** @type {any} */ e) =>
+            h('li', {}, h('span', { class: `badge${e.status === 'rejected' ? ' badge--error' : e.status === 'imported' ? (e.detail ? ' badge--review' : ' badge--ok') : ''}`, text: e.status }), ' ', h('span', { class: 'mono xs', text: e.name }),
+              e.detail ? h('span', { class: 'xs muted', text: ` — ${e.detail}` }) : null,
+              ...(e.source_ids || []).map((/** @type {string} */ id, /** @type {number} */ i) => h('a', { class: 'xs upload-check', href: `#/sources/${id}` }, (e.source_ids.length > 1 ? `Check page ${i + 1}` : 'Check what it found'), icon('right'))))));
           onImported();
           window.dispatchEvent(new CustomEvent('hp:changed'));
         });
@@ -305,7 +307,15 @@ async function renderPage(root, sourceId) {
   /** @type {any} */
   let src;
   try { src = await api(`/api/sources/${sourceId}`); } catch (err) { mount(root, errorState(err)); return; }
-  let view = 'processed';
+  let view = 'analysis';
+  /** @type {any} */
+  let analysis = null;
+  /** @type {any[]} */
+  let regions = [];
+  const layers = { word: true, line: false, ruling: true, omitted: true, excluded: true };
+  let omitMode = false;
+  const summary = h('div', { class: 'stack' }, loadingState(3));
+  const legend = h('div', { class: 'an-legend' });
   /** @type {number[][] | null} */
   let corners = src.processing.corners ? src.processing.corners.map((/** @type {number[]} */ c) => [...c]) : null;
   let rotation = src.processing.rotation || 0;
@@ -355,9 +365,142 @@ async function renderPage(root, sourceId) {
       return;
     }
     const variant = view === 'original' ? 'working-display' : lighting ? 'display-norm' : 'display';
-    mount(stage, h('div', { class: 'compare__frame' },
-      h('img', { src: `/api/sources/${sourceId}/image?variant=${variant}&rev=${src.processing_rev}`, alt: view === 'original' ? 'Original photo' : 'Processed page' })));
+    const img = h('img', { src: `/api/sources/${sourceId}/image?variant=${variant}&rev=${src.processing_rev}`, alt: view === 'original' ? 'Original photo' : 'Corrected page with what the app found drawn on top' });
+    if (view !== 'analysis') { mount(stage, h('div', { class: 'compare__frame' }, img)); return; }
+    mount(stage, h('div', { class: `compare__frame${omitMode ? ' is-omitting' : ''}` }, img, analysisOverlay()));
   }
+
+  /** The detected boxes and omitted areas over the corrected page, plus drawing of new omitted areas. */
+  function analysisOverlay() {
+    const pw = src.processed_w, ph = src.processed_h;
+    const label = Math.max(pw, ph) / 55;
+    const defs = svg('defs', {}, svg('pattern', { id: 'omit-hatch', patternUnits: 'userSpaceOnUse', width: label, height: label, patternTransform: 'rotate(45)' },
+      svg('rect', { width: label, height: label, class: 'an-hatch-bg' }), svg('line', { x1: 0, y1: 0, x2: 0, y2: label, class: 'an-hatch-line', 'stroke-width': label / 3 })));
+    const nodes = [];
+    for (const r of regions) {
+      if (r.cls === 'omitted') continue;
+      const isRuling = r.cls === 'printed_ruling';
+      const excluded = r.status === 'excluded';
+      if (isRuling ? !layers.ruling : excluded ? !layers.excluded : !(r.kind === 'word' ? layers.word : r.kind === 'line' ? layers.line : true)) continue;
+      const cls = ['an-box', isRuling ? 'an-box--ruling' : excluded ? 'an-box--excluded' : `an-box--${r.kind}`, r.status === 'approved' ? 'an-box--approved' : ''];
+      nodes.push(svg('rect', { x: r.x, y: r.y, width: r.w, height: r.h, class: cls.join(' ') }, svg('title', { text: `${r.kind} · ${r.cls} · ${r.status}${r.text ? ` · “${r.text}”` : ''}` })));
+    }
+    if (layers.omitted && analysis) {
+      for (const a of analysis.omitted_areas) {
+        const g = svg('g', { class: 'an-omit', tabindex: 0, role: 'button', 'aria-label': `Omitted area: ${a.label}. Press Enter to restore it.` },
+          svg('rect', { x: a.x, y: a.y, width: a.w, height: a.h, fill: 'url(#omit-hatch)', class: 'an-omit__rect' }),
+          svg('text', { x: a.x + label * 0.4, y: a.y + label * 1.2, 'font-size': label, class: 'an-omit__label', text: `Omitted · ${a.label}` }));
+        const ask = () => restoreArea(a);
+        g.addEventListener('click', (e) => { if (!omitMode) { e.stopPropagation(); ask(); } });
+        g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); ask(); } });
+        nodes.push(g);
+      }
+    }
+    const overlay = /** @type {SVGSVGElement} */ (svg('svg', { viewBox: `0 0 ${pw} ${ph}`, class: 'compare__overlay', preserveAspectRatio: 'none' }, defs, ...nodes));
+    /** @param {PointerEvent} ev */
+    const toFrame = (ev) => {
+      const m = overlay.getScreenCTM();
+      const pt = m ? new DOMPoint(ev.clientX, ev.clientY).matrixTransform(m.inverse()) : { x: 0, y: 0 };
+      return { x: Math.max(0, Math.min(pw, pt.x)), y: Math.max(0, Math.min(ph, pt.y)) };
+    };
+    overlay.addEventListener('pointerdown', (e) => {
+      if (!omitMode) return;
+      e.preventDefault();
+      overlay.setPointerCapture(e.pointerId);
+      const start = toFrame(e);
+      const rect = svg('rect', { class: 'an-drawing', x: start.x, y: start.y, width: 0, height: 0 });
+      overlay.appendChild(rect);
+      /** @param {PointerEvent} ev */
+      const box = (ev) => { const p = toFrame(ev); return { x: Math.min(start.x, p.x), y: Math.min(start.y, p.y), w: Math.abs(p.x - start.x), h: Math.abs(p.y - start.y) }; };
+      const move = (/** @type {PointerEvent} */ ev) => { const b = box(ev); rect.setAttribute('x', String(b.x)); rect.setAttribute('y', String(b.y)); rect.setAttribute('width', String(b.w)); rect.setAttribute('height', String(b.h)); };
+      overlay.addEventListener('pointermove', move);
+      overlay.addEventListener('pointerup', (ev) => {
+        overlay.removeEventListener('pointermove', move);
+        const b = box(ev);
+        if (b.w < pw / 200 || b.h < ph / 200) { rect.remove(); return; }
+        omitDialog(b, () => rect.remove());
+      }, { once: true });
+    });
+    return overlay;
+  }
+
+  async function loadAnalysis() {
+    try {
+      const [a, r] = await Promise.all([api(`/api/sources/${sourceId}/analysis`), api(`/api/sources/${sourceId}/regions`)]);
+      analysis = a; regions = r.regions;
+      renderSummary();
+      if (view === 'analysis') draw();
+    } catch (err) { mount(summary, errorState(err, loadAnalysis)); }
+  }
+
+  function renderSummary() {
+    const a = analysis;
+    const stateIcon = { done: 'check', warn: 'alert', info: 'info', todo: 'info' };
+    mount(summary,
+      h('ol', { class: 'an-steps' }, a.steps.map((/** @type {any} */ st) => h('li', { class: `an-step an-step--${st.state}` },
+        h('span', { class: 'an-step__icon', 'aria-hidden': 'true' }, icon(/** @type {any} */ (stateIcon)[st.state] || 'info')),
+        h('div', {}, h('strong', { text: st.label }), h('span', { class: 'sr-only', text: ` (${st.state === 'warn' ? 'check this' : st.state === 'todo' ? 'not yet' : 'ok'})` }),
+          h('p', { class: 'xs muted', text: st.detail }))))),
+      a.omitted_areas.length ? h('div', { class: 'stack' }, h('h4', { text: 'Omitted areas' }),
+        h('ul', { class: 'plain-list' }, a.omitted_areas.map((/** @type {any} */ o) => h('li', { class: 'row row--between' },
+          h('span', { class: 'small', text: o.label }),
+          h('button', { class: 'btn btn--sm btn--quiet', type: 'button', onClick: () => restoreArea(o) }, icon('undo'), 'Restore')))))
+        : null);
+    mount(legend,
+      ...[['word', 'Words', 'an-key--word'], ['line', 'Lines', 'an-key--line'], ['ruling', 'Printed ruling (ignored)', 'an-key--ruling'],
+        ['omitted', 'Omitted areas', 'an-key--omitted'], ['excluded', 'Excluded', 'an-key--excluded']].map(([k, text, cls]) =>
+        h('label', { class: 'check check--compact' },
+          h('input', { type: 'checkbox', checked: /** @type {any} */ (layers)[k] ? true : undefined, onChange: (/** @type {Event} */ e) => { /** @type {any} */ (layers)[k] = /** @type {HTMLInputElement} */ (e.target).checked; draw(); } }),
+          h('span', { class: `an-key ${cls}`, 'aria-hidden': 'true' }), text)));
+  }
+
+  /** @param {{x:number,y:number,w:number,h:number}} box @param {() => void} onCancel */
+  function omitDialog(box, onCancel) {
+    const dialog = /** @type {HTMLDialogElement} */ (h('dialog', { class: 'dialog', 'aria-labelledby': 'omit-title' }));
+    const reasons = analysis?.omit_reasons || { diagram: 'Diagram or drawing', other: 'Other' };
+    const picker = h('div', { class: 'stack', role: 'radiogroup', 'aria-label': 'What is in this area?' },
+      Object.entries(reasons).map(([v, text], i) => h('label', { class: 'check' }, h('input', { type: 'radio', name: 'omit-reason', value: v, checked: i === 0 ? true : undefined }), text)));
+    let done = false;
+    mount(dialog, h('div', { class: 'dialog__head' }, h('h2', { id: 'omit-title', text: 'Leave this area out?' }),
+      h('button', { class: 'btn btn--quiet btn--sm', type: 'button', 'aria-label': 'Close', onClick: () => dialog.close() }, icon('x'))),
+      h('div', { class: 'stack' },
+        h('p', { class: 'small', text: 'Nothing inside it will be used: detection ignores it, it is blanked out before any image is sent for recognition, and boxes mostly inside it are excluded from training. Approved words are kept. You can restore it at any time.' }),
+        picker,
+        h('div', { class: 'row' }, h('span', { class: 'spacer' }),
+          h('button', { class: 'btn', type: 'button', onClick: () => dialog.close() }, 'Cancel'),
+          h('button', { class: 'btn btn--primary', type: 'button', onClick: async () => {
+            const reason = /** @type {HTMLInputElement} */ (picker.querySelector('input:checked')).value;
+            try {
+              const r = await api(`/api/sources/${sourceId}/omit`, { body: { processing_rev: src.processing_rev, box, reason } });
+              done = true; dialog.close();
+              toast(`Area omitted. ${r.excluded} box(es) inside it excluded${r.kept_approved ? `; ${r.kept_approved} approved word(s) kept as you decided` : ''}.`);
+              loadAnalysis();
+            } catch (err) { toast(err instanceof Error ? err.message : String(err), 'error'); }
+          } }, 'Omit area'))));
+    document.body.appendChild(dialog);
+    dialog.addEventListener('close', () => { dialog.remove(); if (!done) onCancel(); });
+    dialog.showModal();
+  }
+
+  /** @param {any} area */
+  async function restoreArea(area) {
+    if (!window.confirm(`Restore “${area.label}”? Boxes it excluded go back to how they were.`)) return;
+    try {
+      const r = await api(`/api/sources/${sourceId}/omit/${area.id}`, { method: 'DELETE' });
+      toast(`Area restored. ${r.restored} box(es) returned to review.`);
+      loadAnalysis();
+    } catch (err) { toast(err instanceof Error ? err.message : String(err), 'error'); }
+  }
+
+  const omitBtn = h('button', { class: 'btn btn--sm', type: 'button', 'aria-pressed': 'false', onClick: () => {
+    omitMode = !omitMode;
+    omitBtn.setAttribute('aria-pressed', String(omitMode));
+    omitBtn.classList.toggle('btn--primary', omitMode);
+    omitHint.hidden = !omitMode;
+    if (view !== 'analysis') { view = 'analysis'; /** @type {HTMLInputElement} */ (views.querySelector('input[value=analysis]')).checked = true; }
+    draw();
+  } }, icon('draw'), 'Omit an area');
+  const omitHint = h('p', { class: 'small an-hint', hidden: true, role: 'status', text: 'Drag a box over a diagram, printed text or anything that is not your handwriting. Click “Omit an area” again to stop.' });
 
   async function apply() {
     status.textContent = 'Applying in the worker…';
@@ -372,7 +515,7 @@ async function renderPage(root, sourceId) {
   }
 
   const views = h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Image shown' },
-    [['processed', 'Processed'], ['original', 'Original'], ['corners', 'Adjust corners']].map(([v, label]) =>
+    [['analysis', 'What it found'], ['original', 'Original photo'], ['corners', 'Adjust corners']].map(([v, label]) =>
       h('label', {}, h('input', { type: 'radio', name: 'view', value: v, checked: v === view ? true : undefined, onChange: () => { view = v; draw(); } }), h('span', { text: label }))));
   const rot = h('input', { type: 'number', step: '0.5', min: '-180', max: '360', value: String(rotation), 'aria-label': 'Rotation in degrees', class: 'input-narrow',
     onInput: (/** @type {Event} */ e) => { rotation = Number(/** @type {HTMLInputElement} */ (e.target).value) || 0; } });
@@ -380,18 +523,24 @@ async function renderPage(root, sourceId) {
 
   mount(root,
     h('header', { class: 'page-head' },
-      h('div', {}, h('a', { href: '#/sources', class: 'small' }, '← Sources'), h('h1', { text: src.original_filename }),
+      h('div', {}, h('nav', { class: 'row small page-nav', 'aria-label': 'Pages' }, h('a', { href: '#/sources' }, '← Sources'),
+          src.prev_id ? h('a', { href: `#/sources/${src.prev_id}` }, icon('left'), 'Previous page') : null,
+          src.next_id ? h('a', { href: `#/sources/${src.next_id}` }, 'Next page', icon('right')) : null),
+        h('h1', { text: src.original_filename }),
         h('p', { class: 'small muted' }, `${src.working_w} × ${src.working_h} px · imported ${new Date(src.created_at).toLocaleDateString()} · `, h('code', { text: src.id }))),
       h('div', { class: 'row' },
         h('button', { class: 'btn', type: 'button', onClick: async () => {
           const { job_id } = await api(`/api/sources/${sourceId}/detect`, { body: { replace: true } });
           const job = await trackJob(job_id);
-          toast(job.status === 'succeeded' ? `Detection: ${job.result.lines} lines, ${job.result.words} words proposed (untouched proposals replaced; edited ones kept).` : `Detection failed: ${job.error}`, job.status === 'succeeded' ? 'info' : 'error');
+          toast(job.status === 'succeeded' ? `Detection: ${job.result.lines} lines, ${job.result.words} words proposed (untouched proposals replaced; edited ones kept; omitted areas ignored).` : `Detection failed: ${job.error}`, job.status === 'succeeded' ? 'info' : 'error');
+          loadAnalysis();
         } }, icon('refresh'), 'Re-detect regions'),
         h('a', { class: 'btn', href: `#/review?source=${sourceId}` }, icon('review'), 'Review this page'))),
     h('div', { class: 'page-body page-detail' },
-      h('section', { class: 'stack' }, h('div', { class: 'row row--between' }, views, status), stage),
+      h('section', { class: 'stack' }, h('div', { class: 'row row--between' }, views, h('div', { class: 'row' }, status, omitBtn)), omitHint, stage, legend),
       h('aside', { class: 'stack' },
+        h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'What the app did with this page' })),
+          h('div', { class: 'panel__body' }, summary)),
         h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'Photographic correction' })),
           h('div', { class: 'panel__body stack' },
             h('p', { class: 'xs muted', text: 'Corrects the camera only. Slant, spacing and baseline drift in the writing are never changed.' }),
@@ -419,6 +568,7 @@ async function renderPage(root, sourceId) {
             h('span', { class: 'badge badge--outline', text: p.payload.raw.region_type }), ' ', h('span', { class: 'xs muted', text: `${p.model_reported} · prompt ${p.prompt_version}` }),
             p.payload.reasons.length ? h('p', { class: 'xs', text: p.payload.reasons.join('; ') }) : null)))) : null)));
   draw();
+  loadAnalysis();
 }
 
 /** @param {any} src @param {() => void} onSaved */

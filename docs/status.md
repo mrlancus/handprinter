@@ -1,6 +1,6 @@
 # Status (hand-off)
 
-Last updated: 2026-11-22, end of the first build session (branch `claude/blissful-shannon-mu38kt`).
+Last updated: 2026-11-22, second change set: page analysis, omitted areas, LaTeX maths (branch `claude/blissful-shannon-mu38kt`).
 
 Legend:
 - **implemented**: the code exists and runs.
@@ -36,6 +36,8 @@ Nothing has been verified with your real handwriting.
 | DiffusionPen adapter | **blocked** | Upstream has no documented entry point for sampling custom words with your own style images. Next step: clone the repo locally and write and verify a sampling driver against the real code. |
 | Fine-tuning either model | **blocked** | Neither upstream project documents an own-writer fine-tune command. Details are in `docs/model-experiments.md`. |
 | Blind A/B, run log, style profiles | implemented, fixtures for the API | Needs real generations from two adapters before it can be used. |
+| Page analysis ("What it found") and omitted areas | fixtures, browser-checked | `tests/test_omit.py`: exclusion and exact restore, detection ignores omitted ink, recognition images blanked, export excludes. Checked in Chromium at 1440 and 390 px. |
+| Maths as LaTeX (recognise, review, export, Studio) | fixtures, browser-checked | `tests/test_maths.py`. Prompt v2 asks Haiku for LaTeX; **not yet tried live on real handwritten maths.** MathJax renders under the strict CSP (its inline stylesheet is refused, harmlessly). Studio maths is typeset, not handwritten. |
 | Performance budgets | measured in the container | See `docs/performance.md` (10k regions). Re-measure on your desktop. |
 
 ## Live recognition run
@@ -79,7 +81,7 @@ All reviews were done by Sonnet subagents.
 
 ## Pull request
 
-Opened as https://github.com/mrlancus/handprinter/pull/1 (not merged). Short summary:
+https://github.com/mrlancus/handprinter/pull/1 was merged to `main` at the user's request. Short summary:
 
 > **Handprinter: local handwriting dataset and generation studio (first build)**
 >

@@ -1,0 +1,86 @@
+"""Omitted areas: the user can leave diagrams, printed text and other non-handwriting out of everything.
+
+Spec: nothing inside an omitted area is detected, sent for recognition or exported; approved work is
+never silently undone; restoring puts excluded boxes back exactly as they were.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+from PIL import Image
+
+from handprinter import dataset, pages, review
+from handprinter.geometry import Box
+from handprinter.recognition import package
+
+
+def _words(conn, sid):
+    return conn.execute("SELECT * FROM regions WHERE source_id = ? AND deleted = 0 AND kind = 'word' ORDER BY y, x", (sid,)).fetchall()
+
+
+def _area_over_first_line(conn, sid):
+    line = conn.execute("SELECT * FROM regions WHERE source_id = ? AND deleted = 0 AND kind = 'line' ORDER BY y LIMIT 1", (sid,)).fetchone()
+    return Box(line["x"] - 2, line["y"] - 2, line["w"] + 4, line["h"] + 4), line
+
+
+def test_omit_excludes_inside_keeps_approved_and_restore_is_exact(conn, store, fixture_source):
+    sid = fixture_source()
+    pages.run_detection(conn, store, sid)
+    src = pages.get_source(conn, sid)
+    area_box, line = _area_over_first_line(conn, sid)
+    inside = [w for w in _words(conn, sid) if w["parent_id"] == line["id"]]
+    assert len(inside) >= 2
+    approved_id, open_id = inside[0]["id"], inside[1]["id"]
+    review.human_edit(conn, approved_id, {"text": "kept"})
+    review.human_edit(conn, approved_id, {"status": "approved"})
+    review.human_edit(conn, open_id, {"text": "mine"})  # human text, still open -> becomes needs_review? stays as edited
+    before_open = review.get_region(conn, open_id)
+
+    result = pages.omit_area(conn, sid, area_box, "diagram", src["processing_rev"])
+    assert result["kept_approved"] == 1
+    assert review.get_region(conn, approved_id)["status"] == "approved"
+    assert review.get_region(conn, open_id)["status"] == "excluded"
+    assert review.get_region(conn, line["id"])["status"] == "excluded"
+    outside = [w for w in _words(conn, sid) if w["parent_id"] != line["id"]]
+    assert outside and all(w["status"] != "excluded" for w in outside)
+
+    a = pages.analysis(conn, sid)
+    assert a["counts"]["omitted_areas"] == 1 and a["omitted_areas"][0]["label"] == "Diagram or drawing"
+
+    restored = pages.restore_area(conn, sid, result["area"]["id"])
+    assert restored["restored"] >= 2
+    after = review.get_region(conn, open_id)
+    assert (after["status"], after["text"], after["review_reason"]) == (before_open["status"], "mine", before_open["review_reason"])
+    assert not pages.omitted_areas(conn, sid)
+
+
+def test_detection_ignores_ink_inside_omitted_areas(conn, store, fixture_source):
+    sid = fixture_source()
+    src = pages.get_source(conn, sid)
+    pages.omit_area(conn, sid, Box(0, 0, src["processed_w"], src["processed_h"] / 2), "printed", src["processing_rev"])
+    pages.run_detection(conn, store, sid)
+    top = [w for w in _words(conn, sid) if w["y"] + w["h"] / 2 < src["processed_h"] / 2 - 10]
+    assert top == []
+    assert _words(conn, sid), "writing in the lower half is still found"
+
+
+def test_omitted_areas_are_blanked_in_recognition_images_and_kept_out_of_export(conn, store, settings, fixture_source):
+    sid = fixture_source()
+    pages.run_detection(conn, store, sid)
+    src = pages.get_source(conn, sid)
+    area_box, line = _area_over_first_line(conn, sid)
+    pages.omit_area(conn, sid, area_box, "other_author", src["processing_rev"])
+
+    info = package.build(conn, store, settings, [sid], include_overview=True, force=False)
+    manifest = package.load_manifest(store, info["package_id"])
+    assert all(e["region_id"] != line["id"] for e in manifest["items"]), "omitted line is not sent"
+    overview = next(e for e in manifest["items"] if e["context_type"] == "page_overview")
+    img = np.asarray(Image.open(package.package_dir(store, info["package_id"]) / overview["image"]).convert("L"))
+    t = overview["to_source"]
+    x0, y0 = int((area_box.x - t["offset_x"]) / t["scale_x"]) + 2, int((area_box.y - t["offset_y"]) / t["scale_y"]) + 2
+    x1, y1 = int((area_box.x + area_box.w - t["offset_x"]) / t["scale_x"]) - 2, int((area_box.y + area_box.h - t["offset_y"]) / t["scale_y"]) - 2
+    patch = img[y0:y1, x0:x1]
+    assert patch.size and patch.min() == patch.max(), "the omitted area is one flat fill: no ink is visible"
+
+    examples, _ = dataset.eligible_examples(conn, "include_unreviewed", dataset.Filters())
+    assert all(e["id"] not in {w["id"] for w in _words(conn, sid) if w["parent_id"] == line["id"]} for e in examples)

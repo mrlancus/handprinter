@@ -36,6 +36,12 @@ class ProcessingIn(BaseModel):
     lighting: bool = False
 
 
+class OmitIn(BaseModel):
+    processing_rev: int
+    box: BoxIn
+    reason: Literal["diagram", "printed", "other_author", "scribble", "other"] = "diagram"
+
+
 class DetectIn(BaseModel):
     replace: bool = False
 
@@ -116,6 +122,7 @@ class SnapshotIn(BaseModel):
     holdout_sessions: list[str] = []
     seed: int = 1234
     unseen_word_fraction: float = Field(default=0.1, ge=0, le=0.5)
+    include_maths: bool = True
 
 
 class RunIn(BaseModel):

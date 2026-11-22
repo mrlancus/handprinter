@@ -67,7 +67,7 @@ def plan(conn: sqlite3.Connection, source_ids: list[str], include_overview: bool
         full = Box(0, 0, source["processed_w"], source["processed_h"])
         lines = conn.execute(
             f"""SELECT * FROM regions WHERE source_id = ? AND deleted = 0 AND kind = 'line'
-                AND cls IN ('handwriting', 'uncertain') AND status IN ({','.join('?' * len(OPEN_STATUSES))})
+                AND cls IN ('handwriting', 'uncertain', 'equation') AND status IN ({','.join('?' * len(OPEN_STATUSES))})
                 AND (text_origin IS NULL OR text_origin = 'machine') ORDER BY y""",
             (source_id, *OPEN_STATUSES),
         ).fetchall()
@@ -78,7 +78,7 @@ def plan(conn: sqlite3.Connection, source_ids: list[str], include_overview: bool
             margin = max(12.0, 0.25 * line["h"])
             context = target.pad(margin).clamp(full.w, full.h)
             words = conn.execute(
-                "SELECT id, x, y, w, h, revision FROM regions WHERE parent_id = ? AND deleted = 0 AND kind = 'word' ORDER BY x", (line["id"],)
+                "SELECT id, x, y, w, h, revision FROM regions WHERE parent_id = ? AND deleted = 0 AND kind = 'word' AND status != 'excluded' ORDER BY x", (line["id"],)
             ).fetchall()
             items.append(PlannedItem(source_id, line["id"], "line", target, context,
                                      [(w["id"], Box(w["x"], w["y"], w["w"], w["h"]), w["revision"]) for w in words], line["revision"]))
@@ -121,14 +121,17 @@ def build(
 
     entries, cached, total_pixels = [], 0, 0
     working_cache: dict[str, tuple[Image.Image, dict[str, Any]]] = {}
+    omitted: dict[str, list[Box]] = {}
     for index, item in enumerate(planned):
         progress(index / max(1, len(planned)), f"image {index + 1}/{len(planned)}")
         if item.source_id not in working_cache:
             source = pages.get_source(conn, item.source_id)
             working_cache.clear()
             working_cache[item.source_id] = (Image.open(store.working(item.source_id)).convert("RGB"), source)
+            omitted.setdefault(item.source_id, pages.omitted_boxes(conn, item.source_id))
         working, source = working_cache[item.source_id]
-        crop = imaging.cut_crop(working, pages.working_to_processed(source), item.context)
+        # Areas you omitted (diagrams, printed text, other people's writing) are blanked before sending.
+        crop = pages.paint_omitted(imaging.cut_crop(working, pages.working_to_processed(source), item.context), item.context, omitted[item.source_id])
         scale = fit_within(crop.width, crop.height, MAX_LONG_EDGE, MAX_PIXELS)
         if scale < 1:
             crop = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.Resampling.LANCZOS)

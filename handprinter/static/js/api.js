@@ -57,9 +57,10 @@ export async function api(path, opts = {}) {
 /**
  * Upload one file with progress (fetch has no upload progress).
  * @param {string} path @param {File} file @param {(fraction: number) => void} onProgress
+ * @param {Record<string, string>} [fields] extra form fields
  * @returns {Promise<any>}
  */
-export function upload(path, file, onProgress) {
+export function upload(path, file, onProgress, fields = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', path);
@@ -74,6 +75,7 @@ export function upload(path, file, onProgress) {
     xhr.onerror = () => { setOnline(false); reject(new ApiError('Upload failed: server not reachable', 0)); };
     const form = new FormData();
     form.append('file', file, file.name);
+    for (const [k, v] of Object.entries(fields)) form.append(k, v);
     xhr.send(form);
   });
 }

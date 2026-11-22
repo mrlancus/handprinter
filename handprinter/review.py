@@ -13,7 +13,7 @@ STATUSES = ("unprocessed", "proposed", "needs_review", "approved", "excluded")
 KINDS = ("line", "word", "block", "mark")
 CLASSES = (
     "handwriting", "printed_text", "printed_ruling", "underline", "strike_through",
-    "overwrite", "insertion", "diagram", "equation", "uncertain",
+    "overwrite", "insertion", "diagram", "equation", "uncertain", "omitted",
 )
 MARK_CLASSES = ("underline", "strike_through", "overwrite", "insertion")
 
@@ -211,6 +211,8 @@ def _status_change(region: dict[str, Any], status: str, reason: str | None) -> d
     if status == "approved":
         if region["kind"] in ("line", "word") and region["cls"] == "handwriting" and not region["text"]:
             raise ReviewError("an approved handwriting example needs a transcription (use exclude or defer otherwise)")
+        if region["cls"] == "equation" and not region["text"]:
+            raise ReviewError("approved maths needs its LaTeX (for example \\frac{1}{2})")
         out["resolved_flags"] = sorted(set(region["resolved_flags"]) | set(region["flags"]))
         out["flags"] = []
         out["approved_revision"] = region["revision"] + 1

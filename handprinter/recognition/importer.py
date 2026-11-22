@@ -14,6 +14,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 from handprinter import review
+from handprinter.dataset import INLINE_MATH as MATH_SPAN
 from handprinter.db import dumps, new_id, now_iso, transaction
 from handprinter.geometry import Box, Homography
 from handprinter.recognition import align as aligner
@@ -147,6 +148,9 @@ def _store_result(conn: sqlite3.Connection, manifest: dict[str, Any], entry: dic
 
     if entry["context_type"] != "page_overview" and result["region_type"] not in ("handwriting", "mixed"):
         flags.append(f"recogniser_type_{result['region_type']}")
+    has_maths = result["region_type"] == "equation" or bool(result["transcription"] and MATH_SPAN.search(result["transcription"]))
+    if has_maths and entry["context_type"] != "page_overview":
+        flags.append("contains_math")  # LaTeX is always checked by a person
     region_id = entry.get("region_id")
     region_revision = None
     if region_id:
@@ -169,7 +173,8 @@ def _store_result(conn: sqlite3.Connection, manifest: dict[str, Any], entry: dic
     reason = "; ".join(reasons)[:500] or None
     line_flags = set(flags)
     words = entry.get("local_boxes") or []
-    if result["transcription"] and words:
+    # A whole-maths line is one LaTeX example; spreading LaTeX over word boxes would be guesswork.
+    if result["transcription"] and words and result["region_type"] != "equation":
         alignment = aligner.align(result["transcription"], [w["box"][2] for w in words])
         if alignment.ambiguous:
             line_flags.add("alignment_ambiguous")
@@ -183,7 +188,9 @@ def _store_result(conn: sqlite3.Connection, manifest: dict[str, Any], entry: dic
                 reason = ((reason + "; ") if reason else "") + "some word boxes changed after packaging; words not updated"
                 protected += 1
                 continue
-            word_flags = set(flags) | ({"alignment_ambiguous"} if assignment.ambiguous else set())
+            word_flags = (set(flags) - {"contains_math"}) | ({"alignment_ambiguous"} if assignment.ambiguous else set())
+            if assignment.text and MATH_SPAN.search(assignment.text):
+                word_flags.add("contains_math")
             applied, _ = review.machine_propose(conn, word["region_id"], assignment.text, word_flags, assignment.reason)
             protected += 0 if applied else 1
     applied, _ = review.machine_propose(conn, region_id, result["transcription"], line_flags, reason)

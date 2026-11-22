@@ -2,6 +2,7 @@
 import { api } from '../api.js';
 import { fmt, h, isTyping, mount, svg } from '../dom.js';
 import { Viewport, clampBox, rectFrom } from '../geometry.js';
+import { hasMath, renderMath } from '../math.js';
 import { icon } from '../components/icons.js';
 import { emptyState, errorState, flagBadge, loadingState, statusBadge } from '../components/states.js';
 import { toast } from '../app.js';
@@ -9,7 +10,7 @@ import { toast } from '../app.js';
 const CLASSES = ['handwriting', 'printed_text', 'printed_ruling', 'underline', 'strike_through', 'overwrite', 'insertion', 'diagram', 'equation', 'uncertain'];
 const CLASS_LABEL = /** @type {Record<string,string>} */ ({
   handwriting: 'Handwriting', printed_text: 'Printed text', printed_ruling: 'Printed ruling', underline: 'Handwritten underline',
-  strike_through: 'Strike-through', overwrite: 'Overwrite', insertion: 'Insertion', diagram: 'Diagram', equation: 'Equation', uncertain: 'Uncertain / other',
+  strike_through: 'Strike-through', overwrite: 'Overwrite', insertion: 'Insertion', diagram: 'Diagram', equation: 'Maths (LaTeX)', uncertain: 'Uncertain / other', omitted: 'Omitted area',
 });
 const QUEUE_SIZE = 50;
 
@@ -304,7 +305,8 @@ export async function render(root, params) {
         if (r.flags.length) cls.push('rg--flagged');
         if (r.id === state.selected) cls.push('is-selected');
         if (state.multi.has(r.id)) cls.push('is-multi');
-        if (r.cls !== 'handwriting') cls.push('rg--nonhand');
+        if (r.cls === 'omitted') cls.push('rg--omitted');
+        else if (r.cls !== 'handwriting') cls.push('rg--nonhand');
         const rect = svg('rect', { x: r.x, y: r.y, width: r.w, height: r.h, class: cls.join(' '), 'data-id': r.id });
         nodes.push(rect);
       }
@@ -459,6 +461,46 @@ export async function render(root, params) {
       } else if (e.key === 'Escape') { textInput.value = r.text ?? ''; textInput.blur(); }
     });
     textInput.addEventListener('blur', () => { const text = textInput.value; if (text !== (r.text ?? '') && current()?.id === r.id) patch(r, { text }, { text, text_origin: 'human' }); });
+    const isEquation = r.cls === 'equation';
+    const mathy = isEquation || hasMath(r.text) || r.flags.includes('contains_math') || r.flags.includes('recogniser_type_equation');
+    const preview = h('div', { class: 'math-preview', 'aria-live': 'polite', 'aria-label': 'Rendered maths preview' });
+    const refreshPreview = () => renderMath(preview, textInput.value, { whole: isEquation });
+    textInput.addEventListener('input', () => { if (mathPanel.open) refreshPreview(); });
+    /** @param {string} before @param {string} [after] */
+    const insert = (before, after = '') => {
+      const a = textInput.selectionStart ?? textInput.value.length, b = textInput.selectionEnd ?? a;
+      const v = textInput.value;
+      textInput.value = v.slice(0, a) + before + v.slice(a, b) + after + v.slice(b);
+      const caret = a + before.length + (b - a);
+      textInput.setSelectionRange(caret, caret);
+      textInput.focus();
+      refreshPreview();
+    };
+    const tool = (/** @type {string} */ label, /** @type {string} */ title, /** @type {() => void} */ fn) =>
+      h('button', { class: 'btn btn--sm btn--quiet', type: 'button', title, onMousedown: (/** @type {Event} */ e) => e.preventDefault(), onClick: fn }, label);
+    const mathPanel = /** @type {HTMLDetailsElement} */ (h('details', { class: 'stack', open: mathy ? true : undefined },
+      h('summary', { class: 'small' }, 'Maths (LaTeX) ', h('span', { class: 'faint xs', text: isEquation ? '— the whole box is maths; type LaTeX without $' : '— wrap maths in $…$ inside the text' })),
+      h('div', { class: 'math-tools', role: 'toolbar', 'aria-label': 'Insert LaTeX' },
+        isEquation ? null : tool('$…$', 'Wrap the selection as maths', () => insert('$', '$')),
+        tool('a/b', 'Fraction \\frac{}{}', () => insert('\\frac{', '}{}')),
+        tool('x²', 'Superscript ^{}', () => insert('^{', '}')),
+        tool('x₂', 'Subscript _{}', () => insert('_{', '}')),
+        tool('√', 'Square root \\sqrt{}', () => insert('\\sqrt{', '}')),
+        tool('×', '\\times', () => insert('\\times ')),
+        tool('÷', '\\div', () => insert('\\div ')),
+        tool('±', '\\pm', () => insert('\\pm ')),
+        tool('≤', '\\le', () => insert('\\le ')),
+        tool('≥', '\\ge', () => insert('\\ge ')),
+        tool('≠', '\\ne', () => insert('\\ne ')),
+        tool('π', '\\pi', () => insert('\\pi ')),
+        tool('θ', '\\theta', () => insert('\\theta ')),
+        tool('∫', '\\int', () => insert('\\int ')),
+        tool('Σ', '\\sum', () => insert('\\sum '))),
+      preview,
+      isEquation ? null : h('button', { class: 'btn btn--sm', type: 'button', onClick: () => patch(r, { cls: 'equation' }, { cls: 'equation' }) }, 'This whole box is maths'),
+      h('p', { class: 'xs muted', text: 'Transcribe the maths as written, mistakes included. Approved maths is exported to maths.jsonl, never mixed into word training.' })));
+    mathPanel.addEventListener('toggle', () => { if (mathPanel.open) refreshPreview(); });
+    if (mathy) queueMicrotask(refreshPreview);
     const reason = /** @type {HTMLInputElement} */ (h('input', { type: 'text', placeholder: 'Optional reason (kept with the decision)', maxlength: 300, 'aria-label': 'Reason', value: r.review_reason ?? '' }));
     const isMark = r.kind === 'mark' || ['underline', 'strike_through', 'overwrite', 'insertion'].includes(r.cls);
     const proposals = h('div', { class: 'stack' });
@@ -471,8 +513,9 @@ export async function render(root, params) {
         h('p', { class: 'xs muted' }, `Revision ${r.revision} · text by ${r.text_origin ?? 'nobody yet'} · created by ${r.created_by}`)),
       h('figure', { class: 'rv-crop' }, h('img', { src: `/api/regions/${r.id}/crop?rev=${r.revision}`, alt: `Crop of ${r.kind}` }),
         h('figcaption', { class: 'xs muted', text: `${Math.round(r.w)} × ${Math.round(r.h)} px, cut from the full-resolution page` })),
-      h('label', { class: 'field' }, h('span', {}, 'Transcription ', h('span', { class: 'faint', text: '— exactly as written, mistakes included' })), textInput,
+      h('label', { class: 'field' }, h('span', {}, isEquation ? 'LaTeX ' : 'Transcription ', h('span', { class: 'faint', text: '— exactly as written, mistakes included' })), textInput,
         h('span', { class: 'xs muted' }, h('kbd', { text: 'Enter' }), ' save · ', h('kbd', { text: 'Ctrl' }), '+', h('kbd', { text: 'Enter' }), ' save and approve')),
+      mathPanel,
       r.flags.length ? h('div', { class: 'callout callout--review' }, icon('flag'), h('div', { class: 'stack' },
         h('strong', { text: 'Needs a decision' }), h('div', { class: 'row' }, r.flags.map(flagBadge)),
         r.review_reason ? h('p', { class: 'small', text: r.review_reason }) : null,
@@ -485,7 +528,7 @@ export async function render(root, params) {
       reason,
       h('div', { class: 'rv-grid2' },
         h('label', { class: 'field' }, h('span', { text: 'Class' }), h('select', { onChange: (/** @type {Event} */ e) => { const cls = /** @type {HTMLSelectElement} */ (e.target).value; patch(r, { cls }, { cls }); } },
-          CLASSES.map((c) => h('option', { value: c, selected: c === r.cls ? true : undefined }, CLASS_LABEL[c])))),
+          (CLASSES.includes(r.cls) ? CLASSES : [...CLASSES, r.cls]).map((c) => h('option', { value: c, selected: c === r.cls ? true : undefined }, CLASS_LABEL[c] || c)))),
         h('label', { class: 'field' }, h('span', { text: 'Kind' }), h('select', { onChange: (/** @type {Event} */ e) => { const kind = /** @type {HTMLSelectElement} */ (e.target).value; patch(r, { kind }, { kind }); } },
           ['word', 'line', 'mark', 'block'].map((k) => h('option', { value: k, selected: k === r.kind ? true : undefined }, k))))),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: r.other_author ? true : undefined,

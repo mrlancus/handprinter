@@ -88,7 +88,7 @@ def _headless_recognition(job: Job) -> Any:
 def _export_snapshot(job: Job) -> Any:
     p = job.params
     filters = dataset.Filters(tuple(p.get("source_types", ["paper"])), tuple(p.get("style_eras", ["current"])),
-                              tuple(p["sessions"]) if p.get("sessions") else None)
+                              tuple(p["sessions"]) if p.get("sessions") else None, bool(p.get("include_maths", True)))
     config = dataset.SplitConfig(seed=int(p.get("seed", 1234)), holdout_sessions=tuple(p.get("holdout_sessions", [])),
                                  unseen_word_fraction=float(p.get("unseen_word_fraction", 0.1)))
     return dataset.export_snapshot(job.conn, job.store, p.get("name") or "snapshot", p.get("policy", "approved_only"), filters, config, job.progress)

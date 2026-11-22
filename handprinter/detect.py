@@ -79,12 +79,17 @@ def ink_mask(gray: np.ndarray) -> np.ndarray:
     return (gray < local - 18) & (gray < 215)
 
 
-def detect_layout(img: Image.Image) -> Detection:
+def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
+    """Find ruling, lines and words. Ink inside `omit` boxes (image coordinates) is ignored."""
     scale = min(1.0, WORK_EDGE / max(img.size))
     small = img.convert("L").resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.Resampling.LANCZOS)
     gray = np.asarray(small, dtype=np.float32)
     mask = ink_mask(gray)
     h, w = mask.shape
+    for b in omit or []:
+        x0, y0 = max(0, int(b.x * scale)), max(0, int(b.y * scale))
+        x1, y1 = min(w, int(np.ceil((b.x + b.w) * scale))), min(h, int(np.ceil((b.y + b.h) * scale)))
+        mask[y0:y1, x0:x1] = False
 
     row_fill = mask.mean(axis=1)
     ruling_rows = row_fill > 0.35

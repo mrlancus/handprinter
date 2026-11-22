@@ -24,7 +24,11 @@ Each direct dependency, with the reason it is here. The web app environment neve
 
 ## Frontend
 
-There are no runtime dependencies: the frontend is browser-native ES modules and hand-written CSS, with no framework or build step.
+The frontend is browser-native ES modules and hand-written CSS, with no framework or build step. One vendored runtime file:
+
+| File | Why |
+| --- | --- |
+| `handprinter/static/vendor/mathjax/tex-svg-full.js` (MathJax 3.2.2, Apache-2.0, licence alongside) | Renders LaTeX maths previews in Review and typesets maths for Studio. Vendored so nothing loads from a CDN (the page CSP allows only `'self'`). Loaded lazily the first time maths is shown. Under the strict CSP its injected inline stylesheet is refused (a console message); the SVG output renders correctly without it. |
 
 `typescript` (dev only, in `package.json`) runs `tsc --checkJs` over the JSDoc-typed modules. It is never needed to launch the app.
 

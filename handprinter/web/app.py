@@ -12,7 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -173,6 +173,11 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def get_source(source_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         src = pages.get_source(conn, source_id)
         src["image_url"] = f"/api/sources/{source_id}/image?variant=display&rev={src['processing_rev']}"
+        # Neighbours in the Sources grid order (newest first), for stepping through pages one by one.
+        c, i = src["created_at"], source_id
+        newer = conn.execute("SELECT id FROM sources WHERE deleted = 0 AND (created_at > ? OR (created_at = ? AND id < ?)) ORDER BY created_at, id DESC LIMIT 1", (c, c, i)).fetchone()
+        older = conn.execute("SELECT id FROM sources WHERE deleted = 0 AND (created_at < ? OR (created_at = ? AND id > ?)) ORDER BY created_at DESC, id LIMIT 1", (c, c, i)).fetchone()
+        src["prev_id"], src["next_id"] = (newer[0] if newer else None), (older[0] if older else None)
         src["siblings"] = [r[0] for r in conn.execute("SELECT id FROM sources WHERE group_id = ? AND id != ? AND deleted = 0", (src["group_id"], source_id))]
         src["proposals"] = [row_dict(r, ("payload",)) for r in conn.execute(
             "SELECT id, model_reported, prompt_version, payload, created_at, stale FROM proposals WHERE source_id = ? AND region_id IS NULL ORDER BY created_at DESC LIMIT 5", (source_id,))]
@@ -230,6 +235,18 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def detect(source_id: str, body: S.DetectIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         pages.get_source(conn, source_id)
         return {"job_id": jobs.enqueue(conn, "detect", {"source_id": source_id, "replace": body.replace})}
+
+    @app.get("/api/sources/{source_id}/analysis")
+    def source_analysis(source_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return pages.analysis(conn, source_id)
+
+    @app.post("/api/sources/{source_id}/omit")
+    def omit_area(source_id: str, body: S.OmitIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return pages.omit_area(conn, source_id, Box(**body.box.model_dump()), body.reason, body.processing_rev)
+
+    @app.delete("/api/sources/{source_id}/omit/{area_id}")
+    def restore_area(source_id: str, area_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return pages.restore_area(conn, source_id, area_id)
 
     @app.delete("/api/sources/{source_id}")
     def delete_source(source_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
@@ -492,13 +509,13 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
         return studio.list_assets(conn, limit, offset)
 
     @app.post("/api/studio/assets")
-    async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
+    async def upload_asset(file: UploadFile = File(...), label: str | None = Form(default=None, max_length=120)) -> dict[str, Any]:
         data = await file.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
             raise HTTPException(413, "file too large")
         conn = connect(settings.db_path)
         try:
-            return studio.add_upload_asset(conn, store, data, Path(file.filename or "image").stem)
+            return studio.add_upload_asset(conn, store, data, label or Path(file.filename or "image").stem)
         except imaging.UnsupportedInput as exc:
             raise HTTPException(422, str(exc)) from exc
         finally:

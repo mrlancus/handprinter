@@ -26,8 +26,8 @@ Frontend: browser-native ES modules + JSDoc, checked by `tsc --checkJs` (dev onl
 | Path | Contents |
 | --- | --- |
 | `handprinter/` | Python package: `config`, `db`, `geometry`, `ingest`, `preprocess`, `detect`, `review`, `recognition/`, `dataset`, `jobs`, `worker`, `adapters/`, `evaluation`, `studio`, `doctor`, `web/` |
-| `handprinter/static/` | Frontend: `index.html`, `css/tokens.css` (design tokens), `css/*.css`, `js/*.js` |
-| `prompts/recognition/` | Versioned recognition prompts (`v1.md`) |
+| `handprinter/static/` | Frontend: `index.html`, `css/tokens.css` (design tokens), `css/*.css`, `js/*.js`, `vendor/mathjax/` (vendored, local LaTeX rendering) |
+| `prompts/recognition/` | Versioned recognition prompts (`v1.md`, current `v2.md` adds LaTeX maths) |
 | `.claude/agents/`, `.claude/skills/` | Haiku recogniser subagent and `/recognise` skill |
 | `tests/` | pytest suite + fixture generators (non-personal, synthetic) |
 | `scripts/` | Launchers, screenshot harness |
