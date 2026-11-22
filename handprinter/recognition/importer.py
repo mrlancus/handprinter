@@ -31,6 +31,22 @@ FLAG_MAP = {
 MARK_CLASS = {"underline": "underline", "strike_through": "strike_through", "overwrite": "overwrite", "insertion": "insertion", "other": "uncertain"}
 
 
+class _UnsureWords:
+    """Which words of a transcription contain an uncertain span, walking the words left to right."""
+
+    def __init__(self, text: str, spans: list[dict[str, Any]]):
+        self.text, self.spans, self.pos = text, [(s["start"], s["end"]) for s in spans], 0
+
+    def __call__(self, piece: str | None) -> bool:
+        if not piece or not self.spans:
+            return False
+        i = self.text.find(piece, self.pos)
+        if i < 0:
+            return True  # cannot place it: stay cautious
+        self.pos = i + len(piece)
+        return any(a < i + len(piece) and b > i for a, b in self.spans)
+
+
 @dataclass
 class ItemCheck:
     item_id: str
@@ -188,7 +204,7 @@ def _store_result(
     if text and result["region_type"] != "equation":
         alignment = aligner.align(text, [w["box"][2] for w in words]) if words else None
         if ink is not None and (alignment is None or alignment.ambiguous):
-            outcome = _refit_line(conn, ink, src, region_id, words, text, alignment, flags, proposal_id)
+            outcome = _refit_line(conn, ink, src, region_id, words, text, alignment, flags, proposal_id, result["uncertain_spans"])
             if outcome is not None:
                 was_refit = True
                 clear, note = outcome
@@ -201,6 +217,7 @@ def _store_result(
             line_flags.add("alignment_ambiguous")
         if alignment.unplaced_tokens:
             reason = ((reason + "; ") if reason else "") + "no box for: " + " ".join(alignment.unplaced_tokens)
+        unsure = _UnsureWords(text, result["uncertain_spans"])
         for assignment in alignment.boxes:
             word = words[assignment.box_index]
             current = conn.execute("SELECT revision, deleted FROM regions WHERE id = ?", (word["region_id"],)).fetchone()
@@ -209,7 +226,10 @@ def _store_result(
                 reason = ((reason + "; ") if reason else "") + "some word boxes changed after packaging; words not updated"
                 protected += 1
                 continue
-            word_flags = (set(flags) - {"contains_math"}) | ({"alignment_ambiguous"} if assignment.ambiguous else set())
+            # The line's uncertain letters flag only the words that hold them.
+            word_flags = (set(flags) - {"contains_math", "uncertain_span"}) | ({"alignment_ambiguous"} if assignment.ambiguous else set())
+            if unsure(assignment.text):
+                word_flags.add("uncertain_span")
             if assignment.text and MATH_SPAN.search(assignment.text):
                 word_flags.add("contains_math")
             applied, _ = review.machine_propose(conn, word["region_id"], assignment.text, word_flags, assignment.reason)
@@ -247,7 +267,7 @@ def _untouched_machine_box(conn: sqlite3.Connection, region_id: str, packaged_re
 
 def _refit_line(
     conn: sqlite3.Connection, ink: refit.LineInk, source: dict[str, Any], line_id: str, words: list[dict[str, Any]],
-    text: str, alignment: aligner.Alignment | None, flags: list[str], proposal_id: str,
+    text: str, alignment: aligner.Alignment | None, flags: list[str], proposal_id: str, spans: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str] | None:
     """Replace a line's untouched machine word boxes with boxes cut to match the recognised words.
 
@@ -258,7 +278,7 @@ def _refit_line(
         return None
     line = review.get_region(conn, line_id)
     tokens = aligner.tokenize(text)
-    fitted = refit.refit_words(ink, source, Box(line["x"], line["y"], line["w"], line["h"]), len(tokens))
+    fitted = refit.refit_words(ink, source, Box(line["x"], line["y"], line["w"], line["h"]), tokens)
     if fitted is None:
         return None
     boxes, clear = fitted
@@ -268,10 +288,13 @@ def _refit_line(
     clear = clear and not new_alignment.ambiguous
     for w in words:
         review._write(conn, review.get_region(conn, w["region_id"]), {"deleted": 1}, "machine", f"refit:{proposal_id}")
-    base = set(flags) - {"contains_math"}
+    base = set(flags) - {"contains_math", "uncertain_span"}
+    unsure = _UnsureWords(text, spans or [])
     for box, token in zip(boxes, tokens):
         word = review.create_region(conn, source, "word", box, actor="machine", parent_id=line_id, action=f"refit:{proposal_id}")
         word_flags = base | ({"contains_math"} if MATH_SPAN.search(token) else set()) | (set() if clear else {"alignment_ambiguous"})
+        if unsure(token):
+            word_flags.add("uncertain_span")
         review.machine_propose(conn, word["id"], token, word_flags, None if clear else "cut from the text; check the word edges")
     # An untouched detector line grows to hold its words, so no tail or loop is cut off.
     if _untouched_machine_box(conn, line_id, None):

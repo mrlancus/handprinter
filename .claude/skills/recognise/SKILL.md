@@ -46,7 +46,7 @@ Run the `python -m handprinter ...` commands with the repository's virtual envir
    - How many lines were read, how many failed (with reasons) and how many are still missing.
    - A short sample of what was read: up to 8 lines from `show`, copied exactly, marking any with `[needs a look]`.
    - How many lines had their word boxes re-cut (`lines_refit` in the import output).
-   - That the text is a suggestion: next step is Review in the app, where they check and approve each line.
+   - That the text is a suggestion: next step is **Check** in the app, which shows each line with doubtful words in amber; they fix any word and approve the line in one tap (Review is for box surgery).
    - Which model you dispatched (the subagent alias, or the fallback).
 
 ## Rules

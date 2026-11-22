@@ -73,6 +73,20 @@ class RevisionIn(BaseModel):
     expected_revision: int | None = None
 
 
+class ApproveLineIn(BaseModel):
+    words: dict[str, str | None] = {}
+    text: str | None = Field(None, max_length=2000)  # for a line without word boxes
+    expected_revision: int | None = None
+
+
+class RecutLineIn(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class ExcludeLineIn(BaseModel):
+    reason: str | None = Field(None, max_length=200)
+
+
 class SplitIn(BaseModel):
     at_x: float | None = None
     at_y: float | None = None  # split top/bottom instead (a box holding two lines of writing)

@@ -52,10 +52,19 @@ def test_segment_by_count_cuts_at_the_widest_gaps():
     mask = np.zeros((20, 100), dtype=bool)
     for x0, x1 in [(0, 10), (12, 20), (35, 45), (47, 50), (70, 90)]:  # letters; word gaps are 15 and 20
         mask[5:15, x0:x1] = True
-    seg = segment_by_count(mask, 3)
+    seg = segment_by_count(mask, [2, 2, 3])
     assert seg is not None and seg.clear
     assert [(b[0], b[2]) for b in seg.boxes] == [(0, 20), (35, 50), (70, 90)]
-    assert segment_by_count(mask, 6) is None  # more words than ink pieces: leave it to a person
+    assert segment_by_count(mask, [1] * 6) is None  # more words than ink pieces: leave it to a person
+
+
+def test_stray_ink_at_the_end_of_a_line_is_left_out():
+    mask = np.zeros((20, 400), dtype=bool)
+    for x0, x1 in [(0, 10), (12, 20), (35, 45), (47, 50), (70, 90), (250, 399)]:  # three words, then a big doodle far off
+        mask[5:15, x0:x1] = True
+    seg = segment_by_count(mask, [2, 2, 3])
+    assert seg is not None and not seg.clear  # something was dropped: a person should glance at it
+    assert [(b[0], b[2]) for b in seg.boxes] == [(0, 20), (35, 50), (70, 90)]
 
 
 def _built(conn, store, settings, fixture_source):

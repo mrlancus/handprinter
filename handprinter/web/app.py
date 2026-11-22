@@ -341,6 +341,38 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             changes["box"] = body.box.model_dump()
         return review.human_edit(conn, region_id, changes, body.expected_revision, body.reason, body.processing_rev)
 
+    # ---------- quick check: a line at a time ----------
+    @app.get("/api/check")
+    def check(source_id: str | None = None, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        open_marks = ",".join("?" * len(review.OPEN))
+        pages_open = [dict(r) for r in conn.execute(
+            f"""SELECT s.id, s.original_filename, COUNT(*) AS open_lines,
+                       SUM(r.text IS NOT NULL) AS read_lines
+                FROM regions r JOIN sources s ON s.id = r.source_id
+                WHERE r.deleted = 0 AND s.deleted = 0 AND r.kind = 'line' AND r.cls IN ('handwriting', 'uncertain', 'equation')
+                  AND r.status IN ({open_marks})
+                GROUP BY s.id ORDER BY s.created_at, s.id""", review.OPEN)]
+        if source_id is None and pages_open:
+            source_id = next((p["id"] for p in pages_open if p["read_lines"]), pages_open[0]["id"])
+        if source_id is None:
+            return {"pages": [], "source": None, "lines": []}
+        src = pages.get_source(conn, source_id)
+        return {"pages": pages_open, "source": {"id": src["id"], "name": src["original_filename"], "processing_rev": src["processing_rev"]},
+                "lines": review.check_lines(conn, source_id)}
+
+    @app.post("/api/lines/{line_id}/approve")
+    def approve_line(line_id: str, body: S.ApproveLineIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return review.approve_line(conn, line_id, body.words, body.text, body.expected_revision)
+
+    @app.post("/api/lines/{line_id}/recut")
+    def recut_line(line_id: str, body: S.RecutLineIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        review.get_region(conn, line_id)
+        return {"job_id": jobs.enqueue(conn, "recut_line", {"line_id": line_id, "text": body.text})}
+
+    @app.post("/api/lines/{line_id}/exclude")
+    def exclude_line(line_id: str, body: S.ExcludeLineIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return review.exclude_line(conn, line_id, body.reason)
+
     @app.post("/api/regions/{region_id}/undo")
     def undo(region_id: str, body: S.RevisionIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         return review.undo(conn, region_id, body.expected_revision)

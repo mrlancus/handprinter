@@ -85,6 +85,11 @@ def _headless_recognition(job: Job) -> Any:
     return run
 
 
+def _recut_line(job: Job) -> Any:
+    from handprinter.recognition import refit
+    return refit.recut_line(job.conn, job.store, job.params["line_id"], job.params["text"])
+
+
 def _export_snapshot(job: Job) -> Any:
     p = job.params
     filters = dataset.Filters(tuple(p.get("source_types", ["paper"])), tuple(p.get("style_eras", ["current"])),
@@ -127,6 +132,7 @@ HANDLERS: dict[str, Handler] = {
     "import_recognition": _import_recognition,
     "headless_recognition": _headless_recognition,
     "export_snapshot": _export_snapshot,
+    "recut_line": _recut_line,
     "adapter_preflight": _adapter_preflight,
     "adapter_download": _adapter_download,
     "adapter_infer": _adapter_infer,

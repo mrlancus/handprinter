@@ -328,6 +328,88 @@ def split_region_rows(conn: sqlite3.Connection, region_id: str, at_y: float) -> 
         return parts
 
 
+OPEN = ("unprocessed", "proposed", "needs_review")
+
+
+def _line_words(conn: sqlite3.Connection, line_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT id FROM regions WHERE parent_id = ? AND deleted = 0 AND kind = 'word' ORDER BY x", (line_id,)).fetchall()
+    return [get_region(conn, r["id"]) for r in rows]
+
+
+def approve_line(
+    conn: sqlite3.Connection, line_id: str, word_texts: dict[str, str | None], line_text: str | None = None,
+    expected_revision: int | None = None,
+) -> dict[str, Any]:
+    """Quick check: approve a line and its words in one step, with the texts the person confirmed.
+
+    `word_texts` maps word id -> text as typed (missing ids keep their current text). A word whose
+    text is emptied is left out (excluded), not approved. A line without word boxes takes
+    `line_text`. Everything happens in one transaction: all approved or nothing changes.
+    """
+    with transaction(conn):
+        line = _load_for_edit(conn, line_id, expected_revision)
+        if line["kind"] != "line":
+            raise ReviewError("quick check approves lines")
+        words = [w for w in _line_words(conn, line_id) if w["status"] != "excluded" and w["cls"] in ("handwriting", "uncertain", "equation")]
+        unknown = set(word_texts) - {w["id"] for w in words}
+        if unknown:
+            raise ReviewError("some words changed since the page loaded; reload")
+        kept: list[dict[str, Any]] = []
+        for w in words:
+            text = word_texts.get(w["id"], w["text"])
+            text = text.strip() if isinstance(text, str) else text
+            if not text:
+                out = _status_change(w, "excluded", "left out in quick check")
+                _write(conn, w, out, "human", "quick_check_leave_out")
+                continue
+            changes: dict[str, Any] = {}
+            if text != w["text"]:
+                changes.update(text=text, text_origin="human")
+            if w["status"] == "approved":
+                if changes:
+                    changes["approved_revision"] = w["revision"] + 1
+            else:
+                changes.update(_status_change({**w, **changes}, "approved", None))
+            kept.append(_write(conn, w, changes, "human", "quick_check_approve") if changes else w)
+        if kept:
+            text = " ".join(w["text"] for w in kept)
+        else:
+            text = (line_text if line_text is not None else line["text"]) or None
+            text = text.strip() or None if isinstance(text, str) else text
+        changes = {}
+        if text != line["text"]:
+            changes.update(text=text, text_origin="human")
+        if line["status"] == "approved":
+            if changes:
+                changes["approved_revision"] = line["revision"] + 1
+        else:
+            changes.update(_status_change({**line, **changes}, "approved", None))
+        line = _write(conn, line, changes, "human", "quick_check_approve") if changes else line
+        return {"line": line, "words": _line_words(conn, line_id)}
+
+
+def exclude_line(conn: sqlite3.Connection, line_id: str, reason: str | None = None) -> dict[str, Any]:
+    """Quick check: leave a whole line out, with its words."""
+    with transaction(conn):
+        line = _load_for_edit(conn, line_id, None)
+        for w in _line_words(conn, line_id):
+            out = _status_change(w, "excluded", reason or "line left out in quick check")
+            if out:
+                _write(conn, w, out, "human", "quick_check_exclude")
+        out = _status_change(line, "excluded", reason or "left out in quick check")
+        line = _write(conn, line, out, "human", "quick_check_exclude") if out else line
+        return {"line": line, "words": _line_words(conn, line_id)}
+
+
+def check_lines(conn: sqlite3.Connection, source_id: str) -> list[dict[str, Any]]:
+    """Open handwriting lines on a page, top to bottom, each with its word boxes."""
+    rows = conn.execute(
+        f"""SELECT id FROM regions WHERE source_id = ? AND deleted = 0 AND kind = 'line'
+            AND cls IN ('handwriting', 'uncertain', 'equation') AND status IN ({','.join('?' * len(OPEN))}) ORDER BY y, x""",
+        (source_id, *OPEN)).fetchall()
+    return [{"line": get_region(conn, r["id"]), "words": _line_words(conn, r["id"])} for r in rows]
+
+
 def merge_regions(conn: sqlite3.Connection, region_ids: list[str], text: str | None = None) -> dict[str, Any]:
     if len(region_ids) < 2:
         raise ReviewError("select at least two regions to merge")
