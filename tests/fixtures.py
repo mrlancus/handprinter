@@ -24,12 +24,18 @@ def _font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default(size)
 
 
-def page(lines: list[str] | None = None, size: tuple[int, int] = (1200, 900), ruling: bool = True, seed_shift: int = 0) -> Image.Image:
+def page(lines: list[str] | None = None, size: tuple[int, int] = (1200, 900), ruling: bool = True, seed_shift: int = 0, variant: int = 0) -> Image.Image:
+    """`variant` moves a printed header block and the text so pages are visually distinct."""
     lines = FIXTURE_LINES if lines is None else lines
     img = Image.new("RGB", size, (246, 243, 236))
     draw = ImageDraw.Draw(img)
     font = _font(44)
     top = 120
+    if variant:
+        col, row = variant % 4, (variant // 4) % 3
+        x0, y0 = 60 + col * 270, 20 + row * 280
+        draw.rectangle([x0, y0, x0 + 240, y0 + 240], fill=(60 + 15 * col, 70, 90 + 20 * row))
+        top = 60 + ((variant * 37) % 200)
     for i, text in enumerate(lines):
         y = top + i * 150
         if ruling:

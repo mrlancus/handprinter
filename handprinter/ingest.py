@@ -146,7 +146,7 @@ def import_upload(
         elif entry_kind is None:
             results.append(EntryResult(label, "rejected", "unsupported or unrecognised file content"))
         else:
-            results.append(_import_bytes(conn, store, data, entry_kind, PurePosixPath(name).name, filename, batch))
+            results.append(_import_bytes(conn, store, data, entry_kind, name, filename, batch))
     return results or [EntryResult(filename, "rejected", "archive contains no files")]
 
 
@@ -154,6 +154,7 @@ def _import_bytes(
     conn: sqlite3.Connection, store: Store, data: bytes, kind: str, name: str, container: str | None, batch: BatchInfo
 ) -> EntryResult:
     label = f"{container}/{name}" if container else name
+    name = PurePosixPath(name).name
     digest = sha256_bytes(data)
     existing = conn.execute("SELECT id FROM sources WHERE sha256 = ? AND deleted = 0 LIMIT 1", (digest,)).fetchone()
     if existing:

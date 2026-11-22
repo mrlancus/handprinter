@@ -175,7 +175,7 @@ def human_edit(
                 out["status"] = "needs_review"
             actions.append("defer" if out["deferred"] else "undefer")
         if "status" in changes:
-            out.update(_status_change(region, changes["status"], reason))
+            out.update(_status_change({**region, **out}, changes["status"], reason))
             actions.append(f"status:{changes['status']}")
         if reason is not None and "review_reason" not in out:
             out["review_reason"] = reason
