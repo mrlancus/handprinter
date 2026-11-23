@@ -7,6 +7,9 @@ carries the encrypted traffic. Two kinds:
   https://<words>.trycloudflare.com address that changes every time it starts.
 - Named tunnel (free Cloudflare account + a domain): set HANDPRINTER_TUNNEL_TOKEN (and
   HANDPRINTER_PUBLIC_URL for display). Same address every time.
+- Relay (free Cloudflare account, no domain): a small Worker at https://<name>.<you>.workers.dev
+  (relay/worker.js) forwards to whatever quick-tunnel address this PC registered on start.
+  Set HANDPRINTER_RELAY_URL and HANDPRINTER_RELAY_SECRET. Same address every time.
 """
 
 from __future__ import annotations
@@ -60,10 +63,39 @@ def _write_state(settings: Settings, data: dict | None) -> None:
         path.write_text(json.dumps(data), encoding="utf-8")
 
 
+def register_relay(relay_url: str, secret: str, tunnel_url: str, attempts: int = 6) -> str | None:
+    """Tell the workers.dev relay this PC's current tunnel address. Returns None on success, else why not."""
+    import time
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps({"url": tunnel_url}).encode()
+    why = "no attempt made"
+    for attempt in range(attempts):
+        req = urllib.request.Request(relay_url.rstrip("/") + "/__relay/register", data=body, method="POST",
+                                     headers={"authorization": f"Bearer {secret}", "content-type": "application/json",
+                                              "user-agent": "handprinter-relay-register"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as res:
+                if res.status == 200:
+                    return None
+                why = f"relay answered {res.status}"
+        except urllib.error.HTTPError as exc:
+            why = {403: "the relay rejected the secret: HANDPRINTER_RELAY_SECRET must match RELAY_SECRET on the Worker",
+                   400: "the relay refused the address"}.get(exc.code, f"relay answered {exc.code}")
+            if exc.code in (400, 403):
+                return why
+        except (urllib.error.URLError, OSError) as exc:
+            why = f"could not reach the relay ({exc.__class__.__name__})"
+        time.sleep(min(30, 2 ** attempt))
+    return why
+
+
 class Tunnel:
     def __init__(self, settings: Settings, binary: str, token: str | None, public_url: str | None,
-                 on_url: Callable[[str], None]):
+                 on_url: Callable[[str], None], relay_url: str | None = None, relay_secret: str | None = None):
         self.settings, self.binary, self.token, self.public_url, self.on_url = settings, binary, token, public_url, on_url
+        self.relay_url, self.relay_secret = (relay_url or "").rstrip("/") or None, relay_secret or None
         self.proc: subprocess.Popen | None = None
 
     def start(self) -> None:
@@ -81,6 +113,18 @@ class Tunnel:
         threading.Thread(target=self._pump, args=(log,), daemon=True, name="cloudflared-log").start()
 
     def _announce(self, url: str, kind: str) -> None:
+        if kind == "quick" and self.relay_url and self.relay_secret:
+            # the fixed workers.dev address is the one to use; the quick address changes every start
+            _write_state(self.settings, {"url": self.relay_url, "kind": "relay", "tunnel_url": url, "relay": "registering"})
+            problem = register_relay(self.relay_url, self.relay_secret, url)
+            _write_state(self.settings, {"url": self.relay_url if not problem else url, "kind": "relay" if not problem else "quick",
+                                         "tunnel_url": url, "relay": "ok" if not problem else problem})
+            if problem:
+                print(f"Relay not updated: {problem}. Use this address for now instead:", flush=True)
+                self.on_url(url)
+            else:
+                self.on_url(self.relay_url)
+            return
         _write_state(self.settings, {"url": url, "kind": kind})
         self.on_url(url)
 

@@ -79,7 +79,7 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def login(body: S.LoginIn, request: Request) -> JSONResponse:
         if not settings.login_required:
             raise HTTPException(403, "sign-in is not used on this computer")
-        who = client_key(request)
+        who = client_key(request, settings.relay_secret)
         wait = limiter.retry_after(who)
         if wait:
             minutes = max(1, round(wait / 60))

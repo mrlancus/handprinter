@@ -66,7 +66,10 @@ def cmd_online(settings: Settings) -> int:
         print(f"\n{bar}\n    {url}\n{bar}\nOpen this on your iPad or phone and sign in with your password."
               f"\nKeep this window open: closing it takes the site offline.\n", flush=True)
 
-    t = tunnel.Tunnel(settings, binary, token, public, show)
+    relay_url = os.environ.get("HANDPRINTER_RELAY_URL") or _dotenv_value("HANDPRINTER_RELAY_URL")
+    if relay_url and not settings.relay_secret:
+        print("HANDPRINTER_RELAY_URL is set but HANDPRINTER_RELAY_SECRET is not: the relay is not used.", file=sys.stderr)
+    t = tunnel.Tunnel(settings, binary, token, public, show, relay_url, settings.relay_secret)
     t.start()
     print("Starting the Cloudflare tunnel (the address appears in a few seconds)...", flush=True)
     try:

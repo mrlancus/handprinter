@@ -79,6 +79,7 @@ def report(settings: Settings) -> dict[str, Any]:
         "adapters": {name: a.status().as_dict() for name, a in all_adapters(settings.adapter_env).items()},
         "network": {"host": settings.host, "lan_mode": settings.lan_mode, "access_token_set": bool(settings.access_token),
                     "online": settings.online, "public_url": (tunnel.read_state(settings) or {}).get("url") if settings.online else None,
+                    "relay": (tunnel.read_state(settings) or {}).get("relay") if settings.online else None,
                     "cloudflared": tunnel.find_cloudflared()},
     }
 

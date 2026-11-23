@@ -71,9 +71,15 @@ class LoginLimiter:
             self.all.append(now)
 
 
-def client_key(request: Request) -> str:
+def client_key(request: Request, relay_secret: str = "") -> str:
     """Visitor identity for rate limiting. Behind Cloudflare the real address is in
-    CF-Connecting-IP (Cloudflare overwrites it, so it cannot be forged through the tunnel)."""
+    CF-Connecting-IP (Cloudflare overwrites it, so it cannot be forged through the tunnel).
+    Through the workers.dev relay that header holds the relay's address, so the relay passes the
+    visitor's in X-Relay-Client-IP, trusted only together with the relay's secret."""
+    if relay_secret and hmac.compare_digest(request.headers.get("x-relay-key", ""), relay_secret):
+        relayed = request.headers.get("x-relay-client-ip", "")
+        if relayed:
+            return relayed
     return request.headers.get("cf-connecting-ip") or (request.client.host if request.client else "?")
 
 

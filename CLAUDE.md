@@ -32,6 +32,7 @@ Frontend: browser-native ES modules + JSDoc, checked by `tsc --checkJs` (dev onl
 | `.claude/agents/`, `.claude/skills/` | Haiku recogniser subagent and `/recognise` skill |
 | `tests/` | pytest suite + fixture generators (non-personal, synthetic) |
 | `scripts/` | Launchers, screenshot harness |
+| `relay/` | Optional Cloudflare Worker giving online mode a fixed free workers.dev address (`worker.js`, tests: `node --test relay/worker.test.mjs`) |
 | `docs/` | Architecture, status, design system, model research, screenshots |
 
 ## Data layout
@@ -48,7 +49,7 @@ Warm UI usable 2 s; review action acknowledged 100 ms; pan/zoom 60 fps; 10k exam
 
 ## Testing policy
 
-Spec-based, few tests on risky logic (archive safety, transforms, state transitions, human-edit preservation, split leakage, export integrity, recognition import, job recovery). Expected values come from the spec, not current output. Run `pytest -q` and `npx tsc -p .` after changes.
+Spec-based, few tests on risky logic (archive safety, transforms, state transitions, human-edit preservation, split leakage, export integrity, recognition import, job recovery). Expected values come from the spec, not current output. Run `pytest -q` and `npx tsc -p .` after changes (and `node --test relay/worker.test.mjs` if `relay/` changed).
 
 ## Setup
 

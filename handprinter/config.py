@@ -42,6 +42,7 @@ class Settings:
     access_token: str = ""
     online: bool = False
     password: str = ""
+    relay_secret: str = ""  # shared with the workers.dev relay (docs/online.md); empty = no relay
     recognition_model: str = "haiku"
     headless_recognition: bool = False
     headless_concurrency: int = 12
@@ -84,6 +85,7 @@ def load_settings(env: dict[str, str] | None = None, dotenv: Path | None = None)
         access_token=merged.get("HANDPRINTER_ACCESS_TOKEN") or "",
         online=online,
         password=merged.get("HANDPRINTER_PASSWORD") or DEFAULT_ONLINE_PASSWORD,
+        relay_secret=merged.get("HANDPRINTER_RELAY_SECRET") or "",
         recognition_model=merged.get("HANDPRINTER_RECOGNITION_MODEL") or "haiku",
         # Online, you are usually away from the PC, so recognition can be started from the browser
         # unless explicitly turned off.

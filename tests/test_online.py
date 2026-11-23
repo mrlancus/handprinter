@@ -143,3 +143,55 @@ def test_named_tunnel_token_goes_through_the_environment_not_the_command_line(tm
     tunnel.Tunnel(s, "cloudflared", "secret-token-value", "https://hand.example.com", seen.append).start()
     assert "secret-token-value" not in " ".join(captured["cmd"]) and captured["env"]["TUNNEL_TOKEN"] == "secret-token-value"
     assert captured["cmd"][-1] == "run" and seen == ["https://hand.example.com"]
+
+
+def test_through_the_workers_dev_relay(tmp_path):
+    """The relay forwards with its own address in CF-Connecting-IP; the visitor's comes in a header
+    that is trusted only with the relay secret, and the page origin is the workers.dev host."""
+    _, c = online(tmp_path, HANDPRINTER_RELAY_SECRET="relay-secret-123")
+    relay = {**PUBLIC, "cf-connecting-ip": "104.16.0.1", "x-forwarded-host": "hp.me.workers.dev", "x-relay-key": "relay-secret-123"}
+    # five wrong guesses from one real visitor lock that visitor only, even though the relay address is shared
+    for _ in range(5):
+        c.post("/api/login", json={"token": "0000"}, headers={**relay, "x-relay-client-ip": "203.0.113.50"})
+    assert c.post("/api/login", json={"token": "6892"}, headers={**relay, "x-relay-client-ip": "203.0.113.50"}).status_code == 429
+    assert c.post("/api/login", json={"token": "6892"}, headers={**relay, "x-relay-client-ip": "203.0.113.51"}).status_code == 200
+    # a forged visitor header without the secret is ignored: the caller is limited by its real address
+    forged = {**PUBLIC, "cf-connecting-ip": "198.51.100.77", "x-relay-client-ip": "1.1.1.1", "x-relay-key": "guess"}
+    for _ in range(5):
+        c.post("/api/login", json={"token": "0000"}, headers=forged)
+    assert c.post("/api/login", json={"token": "6892"}, headers={**forged, "x-relay-client-ip": "9.9.9.9"}).status_code == 429
+    # requests from the page at the relay address pass the origin check
+    token = re.search(r'name="hp-token" content="([^"]+)"', c.get("/", headers=relay).text).group(1)
+    ok = c.post("/api/batches", json={}, headers={**relay, "origin": "https://hp.me.workers.dev", "x-handprinter-token": token})
+    assert ok.status_code == 200
+
+
+def test_pc_registers_its_tunnel_address_with_the_relay():
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from handprinter import tunnel
+
+    got = {}
+
+    class Relay(BaseHTTPRequestHandler):
+        def do_POST(self):
+            got["path"], got["auth"] = self.path, self.headers.get("authorization")
+            got["body"] = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            self.send_response(200 if got["auth"] == "Bearer right" else 403)
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Relay)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_port}"
+    try:
+        assert tunnel.register_relay(url, "right", "https://abc-def.trycloudflare.com", attempts=1) is None
+        assert got == {"path": "/__relay/register", "auth": "Bearer right", "body": {"url": "https://abc-def.trycloudflare.com"}}
+        assert "secret" in tunnel.register_relay(url, "wrong", "https://abc-def.trycloudflare.com", attempts=1)
+    finally:
+        server.shutdown()

@@ -34,10 +34,48 @@ HANDPRINTER_PASSWORD=your new password
 Changing it signs every device out. Wrong guesses are limited: 5 per device per 15 minutes and 20
 in total per day, after which sign-in pauses (devices already signed in keep working).
 
-## A permanent address (optional)
+## A permanent address, free, no domain (recommended)
 
-The free quick address changes every time you start it. For the same address every time you need
-a free Cloudflare account and a domain on Cloudflare:
+The free quick address changes every time you start it. A free Cloudflare Worker gives you a fixed
+`https://handprinter.<you>.workers.dev` address instead. Everything still runs on your PC: each time
+Handprinter starts online, your PC tells the Worker its new quick address, and the Worker passes
+every request through to it. Your password works as before. When the PC is off, that address
+shows "Handprinter is not running" instead of an error.
+
+One-time setup (about 10 minutes, all in the browser):
+
+1. Make a free account at **dash.cloudflare.com** (no domain needed).
+2. Make a secret on your PC (any long random text). In a terminal in the Handprinter folder:
+   ```
+   .venv\Scripts\python -c "import secrets; print(secrets.token_urlsafe(32))"
+   ```
+   Copy what it prints. Keep it private.
+3. **Storage & Databases → KV → Create** a namespace called `handprinter-relay`.
+4. **Workers & Pages → Create → Worker** (start from "Hello World"), name it `handprinter`, **Deploy**.
+   Then **Edit code**, delete everything, paste the whole of `relay/worker.js` from this folder,
+   and **Deploy** again.
+5. On the Worker: **Settings → Bindings → Add → KV namespace**: variable name `RELAY`, namespace
+   `handprinter-relay`.
+6. **Settings → Variables and Secrets → Add**: type **Secret**, name `RELAY_SECRET`, value: the
+   secret from step 2. Save/deploy.
+7. Note the Worker's address, shown on its overview, e.g. `https://handprinter.lucas.workers.dev`.
+8. In `.env` in the Handprinter folder add:
+   ```
+   HANDPRINTER_RELAY_URL=https://handprinter.<you>.workers.dev
+   HANDPRINTER_RELAY_SECRET=the secret from step 2
+   ```
+9. Double-click `Handprinter.bat`. The window now shows the workers.dev address; bookmark it or
+   Add to Home Screen on the iPad once, and it stays the same.
+
+Notes: right after the PC restarts, the old address can linger for up to a minute, so the page may
+say "not running" briefly: reload. If the window says "Relay not updated", it gives the reason
+(usually the two secrets differ) and shows the quick address to use meanwhile. The free Workers
+plan allows 100,000 requests a day, far more than one person uses. If you have Node, you can deploy
+with `npx wrangler deploy` from the `relay` folder instead of steps 4-6 (fill in `relay/wrangler.toml`).
+
+## A permanent address on your own domain (optional)
+
+If you have a domain on Cloudflare, a named tunnel also gives a fixed address:
 
 1. Cloudflare dashboard → Zero Trust → Networks → Tunnels → **Create a tunnel** (Cloudflared).
 2. Add a public hostname, e.g. `hand.yourdomain.com`, pointing to `http://127.0.0.1:8765`.
