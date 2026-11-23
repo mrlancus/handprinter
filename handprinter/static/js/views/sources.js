@@ -77,6 +77,10 @@ function pagesTab(status, params, cleanups) {
       h('span', { text: `${selected.size} page${selected.size === 1 ? '' : 's'} selected` }),
       h('span', { class: 'spacer' }),
       h('button', { class: 'btn btn--sm btn--quiet', type: 'button', onClick: () => { selected.clear(); load(); updateSelection(); } }, 'Clear'),
+      h('button', { class: 'btn btn--sm btn--danger', type: 'button', onClick: async () => {
+        if (!await deletePages([...selected])) return;
+        selected.clear(); updateSelection(); load();
+      } }, icon('trash'), 'Delete…'),
       h('button', { class: 'btn btn--sm btn--primary', type: 'button', onClick: () => recognitionDialog([...selected], status) }, icon('send'), 'Prepare recognition…'));
   }
 
@@ -85,6 +89,20 @@ function pagesTab(status, params, cleanups) {
   window.addEventListener('hp:jobs-finished', load);
   cleanups.push(() => window.removeEventListener('hp:jobs-finished', load));
   return body;
+}
+
+/** Delete pages after confirming. @param {string[]} ids @returns {Promise<boolean>} */
+async function deletePages(ids) {
+  const n = ids.length;
+  if (!n || !confirm(`Delete ${n} page${n === 1 ? '' : 's'}? ${n === 1 ? 'It' : 'They'} and every box and label on ${n === 1 ? 'it' : 'them'} leave Sources, Check, Review and future datasets. Snapshots already exported are not changed. This cannot be undone in the app.`)) return false;
+  let done = 0;
+  for (const id of ids) {
+    try { await api(`/api/sources/${id}`, { method: 'DELETE' }); done += 1; }
+    catch (err) { toast(err instanceof Error ? err.message : String(err), 'error'); }
+  }
+  toast(`${done} page${done === 1 ? '' : 's'} deleted.`);
+  window.dispatchEvent(new CustomEvent('hp:changed'));
+  return done > 0;
 }
 
 /** @param {string[]} options @param {string} value @param {(v: string) => void} onChange @param {Record<string,string>} [labels] */
@@ -126,7 +144,6 @@ function importPanel(status, onImported) {
   const date = h('input', { type: 'date' });
   const era = selectEl(['current', 'older'], 'current', () => {}, { current: 'Current style', older: 'Older style' });
   const pdfPages = /** @type {HTMLInputElement} */ (h('input', { type: 'text', inputmode: 'numeric', placeholder: 'all, or e.g. 1-7, 9', maxlength: 200 }));
-  const sheetStart = /** @type {HTMLInputElement} */ (h('input', { type: 'number', inputmode: 'numeric', min: '1', placeholder: 'e.g. 1001' }));
   const drop = h('label', { class: 'dropzone', for: 'file-input',
     onDragover: (/** @type {DragEvent} */ e) => { e.preventDefault(); drop.classList.add('is-over'); },
     onDragleave: () => drop.classList.remove('is-over'),
@@ -152,7 +169,7 @@ function importPanel(status, onImported) {
       batch = await api('/api/batches', { body: {
         source_type: type, session: session.value.trim() || null, captured_date: date.value || null,
         style_era: /** @type {HTMLSelectElement} */ (era).value,
-        pages: pagesSpec || null, sheet_start: sheetStart.value ? Number(sheetStart.value) : null,
+        pages: pagesSpec || null,
       } });
     } catch (err) { toast(String(err instanceof Error ? err.message : err), 'error'); return; }
     for (const file of Array.from(files)) {
@@ -202,10 +219,8 @@ function importPanel(status, onImported) {
         h('div', { class: 'row import__pair' },
           h('label', { class: 'field' }, h('span', { text: 'Date (optional)' }), date),
           h('label', { class: 'field' }, h('span', { text: 'Style' }), era)),
-        h('div', { class: 'row import__pair' },
-          h('label', { class: 'field' }, h('span', { text: 'PDF pages (optional)' }), pdfPages),
-          h('label', { class: 'field' }, h('span', { text: 'First page is sheet' }), sheetStart)),
-        h('p', { class: 'xs muted', text: 'Writing sheets in a PDF (e.g. GoodNotes): pick the pages and give the sheet number of the first one; the next pages are the next sheets in order. Leave empty for ordinary notes.' }),
+        h('label', { class: 'field' }, h('span', { text: 'PDF pages (optional)' }), pdfPages),
+        h('p', { class: 'xs muted' }, 'Written-out writing sheets go in ', h('a', { href: '#/sources?tab=sheets', text: 'Writing sheets' }), ' instead, so they are filled in from the sheet.'),
         extras.length ? h('p', { class: 'xs muted', text: extras.join(' · ') }) : null)),
     list);
 }
@@ -620,7 +635,10 @@ async function renderPage(root, sourceId) {
           loadAnalysis();
         } }, icon('refresh'), 'Re-detect regions'),
         h('a', { class: 'btn', href: `#/review?source=${sourceId}` }, icon('review'), 'Review this page'),
-        sheetPicker(sourceId, () => loadAnalysis()))),
+        sheetPicker(sourceId, () => loadAnalysis()),
+        h('button', { class: 'btn btn--danger', type: 'button', onClick: async () => {
+          if (await deletePages([sourceId])) location.hash = src.next_id ? `#/sources/${src.next_id}` : '#/sources';
+        } }, icon('trash'), 'Delete page'))),
     h('div', { class: 'page-body page-detail' },
       h('section', { class: 'stack' }, h('div', { class: 'row row--between' }, views, h('div', { class: 'row' }, status, omitBtn)), omitHint, stage, legend,
         h('p', { class: 'small muted', text: 'To fix a box, tap it: it opens in Review, where you drag its corners, split, merge or delete it.' })),
