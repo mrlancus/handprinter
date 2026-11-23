@@ -25,42 +25,6 @@ EXPORT_SCHEMA_VERSION = "1"
 INLINE_MATH = re.compile(r"\$[^$]+\$")
 
 
-LATEX_LAYOUT = re.compile(r"[\\^_{}]")  # backslash commands, super/subscripts, braces: what plain text cannot hold
-
-
-def plain_maths(text: str | None) -> str | None:
-    """Drop `$...$` around spans with no maths layout: `$Mg$` -> `Mg`, `$x + 1 = 5$` -> `x + 1 = 5`.
-
-    Handwriting looks the same either way, so the label must not depend on it. `$MgSO_4$`, `$H^+$`,
-    `$\\frac{3}{4}$` and `$\\rightarrow$` keep their `$`: their layout is information.
-    """
-    return plain_maths_map(text)[0] if text and "$" in text else text
-
-
-def plain_maths_map(text: str) -> tuple[str, list[int]]:
-    """`plain_maths`, plus where each original character index lands in the result (for uncertain spans)."""
-    out: list[str] = []
-    where = [0] * (len(text) + 1)
-    pos = 0
-    for m in INLINE_MATH.finditer(text):
-        for i in range(pos, m.start()):
-            where[i] = len(out)
-            out.append(text[i])
-        inner = m.group(0)[1:-1]
-        drop = not LATEX_LAYOUT.search(inner)
-        for i in range(m.start(), m.end()):
-            where[i] = len(out)
-            if drop and i in (m.start(), m.end() - 1):
-                continue
-            out.append(text[i])
-        pos = m.end()
-    for i in range(pos, len(text)):
-        where[i] = len(out)
-        out.append(text[i])
-    where[len(text)] = len(out)
-    return "".join(out), where
-
-
 def is_maths(cls: str, text: str | None) -> bool:
     """Maths is stored as LaTeX: a whole region classed `equation`, or `$...$` inside a handwriting line."""
     return cls == "equation" or bool(text and INLINE_MATH.search(text))
@@ -127,9 +91,8 @@ def eligible_examples(conn: sqlite3.Connection, policy: str, filters: Filters) -
         if reason:
             excluded[reason] += 1
             continue
-        text = r["text"] if r["cls"] == "equation" else plain_maths(r["text"])  # `$Mg$` and `Mg` are one label
-        out.append(Example(r["id"], r["kind"], text, r["source_id"], r["group_id"], r["session"], r["source_type"], r["revision"], dict(r),
-                           maths=is_maths(r["cls"], text)))
+        out.append(Example(r["id"], r["kind"], r["text"], r["source_id"], r["group_id"], r["session"], r["source_type"], r["revision"], dict(r),
+                           maths=is_maths(r["cls"], r["text"])))
     return out, excluded
 
 
