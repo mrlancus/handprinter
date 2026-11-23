@@ -434,19 +434,23 @@ def find_lines(clean: np.ndarray, th: float | None = None) -> list[list[tuple[in
     if th <= 0:
         return []
     blocks = xy_blocks(clean, min_column_h=int(6 * th))
-    if len(blocks) <= 1:
-        return _find_lines_in(clean, th)
     out: list[list[tuple[int, int, int, int]]] = []
-    for bx0, by0, bx1, by1 in blocks:
+    rest = clean.copy()
+    for bx0, by0, bx1, by1 in blocks if len(blocks) > 1 else []:
         sub = clean[by0:by1, bx0:bx1]
         comps = components(sub)
-        local = text_height(comps) if len(comps) >= 5 else th
-        # only a clearly different size counts (a heading, a small side note); touching lines or a few
-        # tall letters must not make an area look bigger than it is
-        local = local if (local > 1.6 * th or local < 0.6 * th) else th
+        if len(comps) < 5:
+            continue
+        local = text_height(comps)
+        # Only an area whose writing is clearly a different size (a big heading, a small side note) is
+        # handled on its own; the rest of the page stays together, so lines are never cut at block edges.
+        if 0.6 * th <= local <= 1.6 * th:
+            continue
         local = min(3 * th, max(0.5 * th, local))
         for line in _find_lines_in(sub, local):
             out.append([(x0 + bx0, y0 + by0, x1 + bx0, y1 + by0) for x0, y0, x1, y1 in line])
+        rest[by0:by1, bx0:bx1] = False
+    out.extend(_find_lines_in(rest, th))
     return out
 
 
