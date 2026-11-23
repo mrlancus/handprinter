@@ -117,3 +117,38 @@ def test_a_page_of_a_printed_sheet_is_labelled_from_it(conn, store, import_bytes
     out = sheets.apply_sheet(conn, store, src, sheet["id"])
     texts, _ = _texts(conn, src)
     assert texts == written and out["matched"] == 5
+
+
+def test_a_line_detection_split_in_two_is_joined_back_for_the_sheet(conn, store, import_bytes):
+    """A wide gap before the last words (or a stray tail) must not become a sheet line of its own."""
+    from PIL import ImageDraw
+
+    from tests.fixtures import _font
+
+    sheet_id = _sheet(conn, LINES)
+    img = page(LINES[:1] + [""] + LINES[2:], ruling=False)
+    d = ImageDraw.Draw(img)
+    d.text((90, 270), "pack my box with", fill=(35, 38, 60), font=_font(44))
+    d.text((820, 270), "five jugs", fill=(35, 38, 60), font=_font(44))  # far to the right, past the joining distance
+    src = import_bytes(encode(img))[0].source_ids[0]
+    from handprinter import pages
+    pages.run_detection(conn, store, src)
+    assert len(_texts(conn, src)[0]) == 6  # detection alone: two pieces for line 2
+    out = sheets.apply_sheet(conn, store, src, sheet_id)
+    texts, rows = _texts(conn, src)
+    assert texts == LINES and out["unmatched_lines"] == 0 and out["matched"] == 5
+    words = [w["text"] for w in review._line_words(conn, rows[1]["id"])]
+    assert words == ["pack", "my", "box", "with", "five", "jugs"]
+
+
+def test_redetecting_a_sheet_page_keeps_its_sheet_text(conn, store, import_bytes, settings):
+    from handprinter import jobs, worker
+
+    sheet_id = _sheet(conn, LINES)
+    src = import_bytes(encode(page(LINES, ruling=False)))[0].source_ids[0]
+    sheets.apply_sheet(conn, store, src, sheet_id)
+    job_id = jobs.enqueue(conn, "detect", {"source_id": src, "replace": True})
+    worker.run_one(conn, store, settings, jobs.claim(conn, "general", 1))
+    job = jobs.get(conn, job_id)
+    assert job["status"] == "succeeded", job
+    assert _texts(conn, src)[0] == LINES  # fresh boxes, the sheet's text again

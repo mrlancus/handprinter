@@ -316,7 +316,7 @@ def _merge_runs(runs: list[tuple[int, int]], max_gap: int) -> list[tuple[int, in
     merged: list[tuple[int, int]] = []
     for start, end in runs:
         if merged and start - merged[-1][1] <= max_gap:
-            merged[-1] = (merged[-1][0], end)
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))  # a dot inside a word must not cut its end off
         else:
             merged.append((start, end))
     return merged

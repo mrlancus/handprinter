@@ -80,7 +80,13 @@ def _apply_sheet(job: Job) -> Any:
 
 
 def _detect(job: Job) -> Any:
-    return pages.run_detection(job.conn, job.store, job.params["source_id"], replace=bool(job.params.get("replace")))
+    source_id = job.params["source_id"]
+    out = pages.run_detection(job.conn, job.store, source_id, replace=bool(job.params.get("replace")))
+    # A page already labelled from a writing sheet stays labelled: the fresh boxes get the sheet's text again.
+    sheet = job.conn.execute("SELECT sheet_id FROM sheet_pages WHERE source_id = ?", (source_id,)).fetchone()
+    if sheet and not out.get("skipped"):
+        out["sheet"] = sheets.apply_sheet(job.conn, job.store, source_id, sheet[0])
+    return out
 
 
 def _process(job: Job) -> Any:

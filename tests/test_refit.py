@@ -282,3 +282,10 @@ def test_thin_rule_filter_leaves_plain_writing_alone():
     for y0 in (110, 260):
         m = detect.ink_mask(gray[y0:y0 + 80, 60:1150])
         assert not detect.thin_rule_pixels(m).any()
+
+
+def test_a_dot_inside_a_word_does_not_cut_the_word_short():
+    from handprinter import detect
+
+    # pieces sorted by left edge: a long word, then the dot of an i inside it, then the next word
+    assert detect._merge_runs([(0, 100), (40, 45), (120, 130)], max_gap=5) == [(0, 100), (120, 130)]

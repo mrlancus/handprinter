@@ -324,6 +324,7 @@ def apply_sheet(conn: sqlite3.Connection, store: Store, source_id: str, sheet_id
         (source_id,)).fetchall()
     lines = sorted((review.get_region(conn, r["id"]) for r in rows), key=lambda r: (r["y"] + r["h"] / 2, r["x"]))
     ink = refit.LineInk(conn, store)
+    lines = _join_rows(conn, ink, source, lines, sheet_id)
     widths = []
     for ln in lines:
         mask, _, _ = ink.mask(source, Box(ln["x"], ln["y"], ln["w"], ln["h"]))
@@ -354,6 +355,97 @@ def apply_sheet(conn: sqlite3.Connection, store: Store, source_id: str, sheet_id
     return {"source_id": source_id, "sheet_id": sheet_id, "sheet_number": sheet["number"], **summary}
 
 
+def _untouched(conn: sqlite3.Connection, region: dict[str, Any]) -> bool:
+    return (region["created_by"] in ("detector", "machine") and region["text_origin"] != "human" and region["status"] != "approved"
+            and not conn.execute("SELECT 1 FROM region_revisions WHERE region_id = ? AND actor = 'human' LIMIT 1", (region["id"],)).fetchone())
+
+
+def _join_rows(conn: sqlite3.Connection, ink: refit.LineInk, source: dict[str, Any], lines: list[dict[str, Any]],
+               sheet_id: str) -> list[dict[str, Any]]:
+    """On a sheet each written line is one row: join the pieces detection split it into.
+
+    Detection works without knowing the page, so a wide gap can end a line early (the last word
+    becomes a line of its own) and a descender or a dot can become a "line" of its own. Those pieces
+    would be matched to sheet lines and steal their text. Untouched machine lines only; returns the
+    lines top to bottom.
+    """
+    if len(lines) < 2:
+        return lines
+    info = []
+    for ln in lines:
+        mask, _, oy = ink.mask(source, Box(ln["x"], ln["y"], ln["w"], ln["h"]))
+        if not mask.any():
+            info.append(None)
+            continue
+        rows = np.flatnonzero(mask.any(axis=1))
+        c0, c1, total = detect_core(mask)
+        info.append({"line": ln, "x0": ln["x"], "x1": ln["x"] + ln["w"], "y0": oy + rows[0], "y1": oy + rows[-1] + 1,
+                     "b0": oy + c0, "b1": oy + c1, "ink": total, "ok": _untouched(conn, ln)})
+    real = [i for i in info if i]
+    if len(real) < 2:
+        return lines
+    widest = max(i["x1"] - i["x0"] for i in real)
+    body = float(np.median([i["b1"] - i["b0"] for i in real if i["x1"] - i["x0"] >= 0.3 * widest] or [1]))
+    big = [i for i in real if i["x1"] - i["x0"] >= 0.3 * widest or not i["ok"]]
+    small = [i for i in real if i not in big]
+    # Rows: the long lines, plus any piece whose letter bodies sit at the same height (the end of a row).
+    rows_: list[list[dict[str, Any]]] = []
+    for i in sorted(big, key=lambda i: (i["b0"] + i["b1"]) / 2):
+        mid = (i["b0"] + i["b1"]) / 2
+        home = None
+        for r in rows_:
+            rmid = sum((j["b0"] + j["b1"]) / 2 for j in r) / len(r)
+            apart = all(min(i["x1"], j["x1"]) - max(i["x0"], j["x0"]) < 0.3 * min(i["x1"] - i["x0"], j["x1"] - j["x0"]) for j in r)
+            if abs(mid - rmid) <= 1.2 * body and apart and all(j["ok"] for j in r) and i["ok"]:
+                home = r
+        if home is None:
+            rows_.append([i])
+        else:
+            home.append(i)
+    # Short pieces: the end of a row (letter bodies at its height), or a tail or dot of the nearest row's letters.
+    for i in small:
+        best, dist = None, 2.0 * body
+        for r in rows_:
+            if not all(j["ok"] for j in r):
+                continue
+            b0, b1 = min(j["b0"] for j in r), max(j["b1"] for j in r)
+            x0, x1 = min(j["x0"] for j in r), max(j["x1"] for j in r)
+            if i["x1"] < x0 - 6 * body or i["x0"] > x1 + 6 * body:
+                continue
+            d = max(0.0, b0 - i["y1"], i["y0"] - b1)
+            if (i["b0"] + i["b1"]) / 2 > b1 + 1.5 * body and i["y0"] > b1 + 0.8 * body:
+                continue  # its own letters sit well below: not a tail of this row
+            if d < dist:
+                best, dist = r, d
+        if best is None:
+            rows_.append([i])
+        else:
+            best.append(i)
+    out = []
+    for r in rows_:
+        if len(r) == 1:
+            out.append(r[0]["line"])
+            continue
+        box = Box(r[0]["line"]["x"], r[0]["line"]["y"], r[0]["line"]["w"], r[0]["line"]["h"])
+        for j in r[1:]:
+            box = box.union(Box(j["line"]["x"], j["line"]["y"], j["line"]["w"], j["line"]["h"]))
+        flags = sorted({f for j in r for f in j["line"]["flags"]} - {"may_be_several_lines"})
+        with transaction(conn):
+            joined = review.create_region(conn, source, "line", box, actor="machine", flags=flags,
+                                          action=f"sheet:{sheet_id}:join_row")
+            for j in r:
+                review._write(conn, j["line"], {"deleted": 1}, "machine", f"joined_into:{joined['id']}")
+                conn.execute("UPDATE regions SET parent_id = ? WHERE parent_id = ? AND deleted = 0", (joined["id"], j["line"]["id"]))
+        out.append(review.get_region(conn, joined["id"]))
+    leftover = [ln for ln, i in zip(lines, info) if i is None]
+    return sorted(out + leftover, key=lambda r: (r["y"] + r["h"] / 2, r["x"]))
+
+
+def detect_core(mask: np.ndarray) -> tuple[int, int, int]:
+    from handprinter import detect
+    return detect._core(mask, 0, 0, mask.shape[1], mask.shape[0])
+
+
 def _label_line(conn: sqlite3.Connection, ink: refit.LineInk, source: dict[str, Any], line: dict[str, Any], text: str,
                 sheet: dict[str, Any], index: int) -> None:
     tokens = tokenize(text)
@@ -366,9 +458,7 @@ def _label_line(conn: sqlite3.Connection, ink: refit.LineInk, source: dict[str, 
     if misfit:
         flags.add("text_may_not_fit")
         note += f"; {misfit}"
-    untouched = all(w["created_by"] in ("detector", "machine") and w["text_origin"] != "human" and w["status"] != "approved"
-                    and not conn.execute("SELECT 1 FROM region_revisions WHERE region_id = ? AND actor = 'human' LIMIT 1", (w["id"],)).fetchone()
-                    for w in words)
+    untouched = all(_untouched(conn, w) for w in words)
     fitted = None if misfit or not untouched else refit.refit_words(ink, source, box, tokens)
     if fitted is not None:
         boxes, clear = fitted
