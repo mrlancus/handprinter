@@ -27,11 +27,13 @@ CLEAR_RATIO = 1.3
 class Segmentation:
     boxes: list[tuple[int, int, int, int]]  # x0, y0, x1, y1 in mask pixels, left to right
     clear: bool  # every cut is clearly wider than every gap kept inside a word, and nothing was dropped
+    cost: float = 0.0  # how badly the word widths and gaps fit the words (0 = perfectly), summed over words
 
 
 DROP_PENALTY = 0.8  # per piece of ink left out at either end of the line (a doodle, a diagram edge)
 MAX_DROP = 3
 INNER_GAP_PENALTY = 0.7
+NARROW_CUT_PENALTY = 0.5  # cutting between words at a gap far narrower than the gaps between the other words
 
 
 def _pieces(mask: np.ndarray, n: int) -> list[tuple[int, int]]:
@@ -42,14 +44,41 @@ def _pieces(mask: np.ndarray, n: int) -> list[tuple[int, int]]:
     if len(runs) <= n:
         return runs
     gaps = sorted(b[0] - a[1] for a, b in zip(runs, runs[1:]))
+    # Keep about two pieces per word: merging further can swallow the gap between two words written close.
+    want = min(len(runs), 2 * n + 1)
     for limit in (gaps[len(gaps) // 2], gaps[len(gaps) // 4], 0):
         merged = detect._merge_runs(runs, max_gap=limit)
-        if len(merged) >= n + 1 or limit == 0:
+        if len(merged) >= want or limit == 0:
             return merged if len(merged) >= n else runs
     return runs
 
 
-def segment_by_count(mask: np.ndarray, lengths: list[float], spaced: list[bool] | None = None) -> Segmentation | None:
+def _split_touching(mask: np.ndarray, runs: list[tuple[int, int]], n: int) -> tuple[list[tuple[int, int]], int]:
+    """Split pieces at their thinnest ink column (away from their ends) until there are `n` of them."""
+    runs = list(runs)
+    cols = mask.sum(axis=0)
+    splits = 0
+    # Only a gap or two missing on a long line: with many missing, the text is not this line's (or the
+    # words really run together) and a person should decide.
+    if n - len(runs) > max(1, n // 5):
+        return runs, 0
+    while len(runs) < n:
+        k = max(range(len(runs)), key=lambda i: runs[i][1] - runs[i][0])
+        a, b = runs[k]
+        ink_w = sum(e - d for d, e in runs)
+        if b - a < 1.6 * ink_w / n:
+            break  # not wide enough to hold two words
+        margin = max(2, (b - a) // 5)
+        if b - a < 2 * margin + 2:
+            break
+        cut = a + margin + int(np.argmin(cols[a + margin:b - margin]))
+        runs[k:k + 1] = [(a, cut), (cut + 1, b)] if cols[cut] == 0 else [(a, cut), (cut, b)]
+        splits += 1
+    return runs, splits
+
+
+def segment_by_count(mask: np.ndarray, lengths: list[float], spaced: list[bool] | None = None,
+                     max_drop: int = MAX_DROP) -> Segmentation | None:
     """Cut a line's ink mask into one box per word, given each word's number of characters.
 
     Words are contiguous groups of ink pieces. The cut minimises how far each word's width is
@@ -63,18 +92,26 @@ def segment_by_count(mask: np.ndarray, lengths: list[float], spaced: list[bool] 
     if n < 1 or mask.size == 0:
         return None
     runs = _pieces(mask, n)
+    forced = 0
+    if len(runs) < n:
+        # Words written touching: split the widest pieces where the ink is thinnest. Such a cut is a
+        # guess, so the result is never "clear" and is checked by you.
+        runs, forced = _split_touching(mask, runs, n)
     m = len(runs)
     if m < n:
         return None
     gap = [runs[i + 1][0] - runs[i][1] for i in range(m - 1)]
     best: tuple[float, list[tuple[int, int]], int, int] | None = None
-    for s in range(min(MAX_DROP, m - n) + 1):
-        for e in range(m, max(m - MAX_DROP, s + n) - 1, -1):
+    for s in range(min(max_drop, m - n) + 1):
+        for e in range(m, max(m - max_drop, s + n) - 1, -1):
             span = runs[s:e]
             # letter width from the ink itself (gaps between words excluded), so far-off junk cannot stretch it
             char_w = max(1e-6, 1.1 * sum(b - a for a, b in span) / max(1, sum(lengths)))
             k_count = e - s
             inf = float("inf")
+            # a cut between two words is expected at one of the widest gaps; a cut in a narrow gap costs a little
+            span_gaps = sorted(gap[s:e - 1], reverse=True)
+            ref_gap = float(span_gaps[n - 2]) if n >= 2 and len(span_gaps) >= n - 1 else 0.0
             cost = [[inf] * (k_count + 1) for _ in range(n + 1)]
             back = [[-1] * (k_count + 1) for _ in range(n + 1)]
             cost[0][0] = 0.0
@@ -90,6 +127,8 @@ def segment_by_count(mask: np.ndarray, lengths: list[float], spaced: list[bool] 
                         edges += [gap[s + i - 1]] if s + i < m else []
                         if edges and inner >= min(edges) and not spaced[k - 1]:
                             c += INNER_GAP_PENALTY
+                        if k < n and ref_gap > 0 and s + i < m:
+                            c += NARROW_CUT_PENALTY * max(0.0, 1.0 - gap[s + i - 1] / ref_gap)
                         if cost[k - 1][j] + c < cost[k][i]:
                             cost[k][i], back[k][i] = cost[k - 1][j] + c, j
             # leaving out an end piece is cheaper when a wide gap sets it apart from the writing
@@ -108,16 +147,16 @@ def segment_by_count(mask: np.ndarray, lengths: list[float], spaced: list[bool] 
                 best = (total, groups, s, e)
     if best is None:
         return None
-    _, groups, s, e = best
+    total_cost, groups, s, e = best
     cuts = [gap[b - 1] for (_, b) in groups[:-1]]
     inner = [g for (a, b), sp in zip(groups, spaced) if not sp for g in gap[a:b - 1]]
-    clear = s == 0 and e == m and (not cuts or not inner or min(cuts) >= CLEAR_RATIO * max(1, max(inner)))
+    clear = not forced and s == 0 and e == m and (not cuts or not inner or min(cuts) >= CLEAR_RATIO * max(1, max(inner)))
     boxes = []
     for a, b in groups:
         x0, x1 = runs[a][0], runs[b - 1][1]
         rows = np.flatnonzero(mask[:, x0:x1].any(axis=1))
         boxes.append((int(x0), int(rows[0]), int(x1), int(rows[-1]) + 1))
-    return Segmentation(boxes, clear)
+    return Segmentation(boxes, clear, float(total_cost))
 
 
 class LineInk:
@@ -158,22 +197,30 @@ OPERATOR_COMMANDS = r"\\(le|ge|leq|geq|neq|approx|times|cdot|pm|mp|to|rightarrow
 
 
 def maths_width(src: str) -> float:
-    """Roughly how many characters wide LaTeX is when written by hand.
+    """Roughly how many lowercase letters wide LaTeX is when written by hand.
 
-    A command is one symbol, a fraction is as wide as its longer part, and a power or index
-    (written small) counts half.
+    A symbol command is one letter, a function name (sin, log) its letters, a fraction as wide as its
+    wider part, a power or index (written small) half, brackets and stops narrow, and an operator
+    or explicit space adds the space around it.
     """
+    src = re.sub(r"\\(?:text|mathrm|mathbf|operatorname|vec|overline|bar|hat)\{([^{}]*)\}", r"\1", src)
     frac = re.compile(r"\\frac\{([^{}]*)\}\{([^{}]*)\}")
-    while frac.search(src):
-        src = frac.sub(lambda mm: "x" * (max(len(mm.group(1)), len(mm.group(2))) + 1), src)
+    while frac.search(src):  # "#" counts half a letter
+        src = frac.sub(lambda mm: "#" * max(1, round(2 * (max(maths_width(mm.group(1)), maths_width(mm.group(2))) + 0.5))), src)
     gaps = len(re.findall(r"\\(?:[,;:]|quad|qquad)", src))  # an explicit space is about a letter wide
     src = re.sub(r"\\(left|right|mathbf|mathrm|text|operatorname|vec|[,;:!]|qquad|quad)", "", src)
     # a relation or operator (not one in a power or index, like H⁺) is written with space around it
     src = re.sub(OPERATOR_COMMANDS, "=", src)
+    src = re.sub(r"\\(sin|cos|tan|sec|csc|cot|log|ln|exp|lim|max|min|det|arcsin|arccos|arctan|sinh|cosh|tanh)(?![a-zA-Z])",
+                 lambda mm: mm.group(1), src)  # written out as letters
     src = re.sub(r"\\[a-zA-Z]+", "x", src)
     ops = len(re.findall(r"[=+<>-]", re.sub(r"[\^_](\{[^{}]*\}|\S)", "", src)))
-    small = sum(len(re.sub(r"[{}\s]", "", a or b)) for a, b in re.findall(r"[\^_](?:\{([^{}]*)\}|(\S))", src))
-    return max(1.0, len(re.sub(r"[{}\s^_]", "", src)) - 0.5 * small + ops + gaps)
+
+    def width(text: str) -> float:
+        return sum(0.5 if c in "#()[]|" else char_width(c) for c in re.sub(r"[{}\s^_]", "", text))
+
+    small = sum(width(a or b) for a, b in re.findall(r"[\^_](?:\{([^{}]*)\}|(\S))", src))
+    return max(1.0, width(src) - 0.5 * small + ops + gaps)
 
 
 def maths_len(src: str) -> int:
@@ -190,13 +237,47 @@ def is_spaced(token: str) -> bool:
     return False
 
 
+def fit_cost(mask: np.ndarray, text: str) -> float:
+    """How well a line's ink fits a text, per word (0 = perfectly; 2 = cannot hold these words).
+
+    Used to tell which sheet line a written line is: the ink must cut into that many words, at
+    widths in proportion to the words' written lengths.
+    """
+    from handprinter.recognition.align import tokenize
+
+    tokens = tokenize(text)
+    if not tokens or mask.size == 0 or not mask.any():
+        return 2.0
+    seg = segment_by_count(mask, [written_len(t) for t in tokens], [is_spaced(t) for t in tokens], max_drop=0)
+    return 2.0 if seg is None else min(2.0, seg.cost / len(tokens))
+
+
 def written_len(token: str) -> float:
     """How many characters wide a word is on paper: `$\\alpha$,` is two (α and the comma), not nine."""
     total, rest = 0.0, token
     for mm in re.finditer(r"\$([^$]*)\$", token):
         total += maths_width(mm.group(1))
     rest = re.sub(r"\$[^$]*\$", "", token)
-    return max(1.0, total + len(rest))
+    return max(1.0, total + sum(char_width(c) for c in rest))
+
+
+NARROW = set(".,:;'!|`")
+WIDE = set("MW")
+
+
+def char_width(c: str) -> float:
+    """Rough handwritten width of a character in lowercase letters: capitals are wider, stops and commas tiny."""
+    if c in NARROW:
+        return 0.4
+    if c in WIDE:
+        return 1.7
+    if c.isupper():
+        return 1.35
+    if c in "mw":
+        return 1.4
+    if c in "ilj":
+        return 0.6
+    return 1.0
 
 
 def own_ink(mask: np.ndarray) -> np.ndarray:

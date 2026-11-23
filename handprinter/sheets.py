@@ -239,18 +239,22 @@ def list_sheets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 SKIP_LINE = 1.6   # a written line that is not on the sheet (a note, a crossed-out attempt)
 SKIP_PROMPT = 1.2  # a sheet line you did not write
 SKIP_REST = 0.8    # sheet lines after your last written line: you simply stopped there (common)
+FIT_REACH = 4     # written line i is only tried against sheet lines i-4 .. i+4
 MAX_PAIR = 1.0     # below SKIP_LINE + SKIP_REST (and SKIP_LINE + SKIP_PROMPT): writing the lines in order is the first guess
 
 
 _maths_len = refit.maths_len
 
 
-def match_lines(widths: list[float], texts: list[str], word_widths: list[list[float]] | None = None) -> list[tuple[int | None, int | None]]:
+def match_lines(widths: list[float], texts: list[str], word_widths: list[list[float]] | None = None,
+                fits: list[list[float]] | None = None) -> list[tuple[int | None, int | None]]:
     """Pair written lines (top to bottom) with sheet lines (in order), allowing skipped or extra lines.
 
     The cost of a pair combines how far the line's width per character is from the page's typical
     width per character and, when word boxes are known, how well the line's pattern of word widths
-    fits the sheet line's word lengths (a line's rhythm tells similar-length lines apart).
+    fits the sheet line's word lengths (a line's rhythm tells similar-length lines apart). `fits`, when
+    given, is that rhythm measured on the ink itself (cutting the line into the sheet line's words),
+    which is far more telling than the detector's word boxes.
     Returns (written index or None, sheet index or None) in order.
     """
     m, n = len(widths), len(texts)
@@ -260,7 +264,11 @@ def match_lines(widths: list[float], texts: list[str], word_widths: list[list[fl
     # line: when word gaps are found poorly, every pairing fits badly by about the same amount, and that
     # shared misfit must not make skipping look cheaper than pairing.
     rhythm = [[0.0] * n for _ in range(m)]
-    if word_widths:
+    if fits:
+        for i in range(m):
+            low = min(fits[i]) if fits[i] else 0.0
+            rhythm[i] = [f - low for f in fits[i]]
+    elif word_widths:
         for i in range(m):
             if word_widths[i]:
                 row = [min(2.0, align(texts[j], word_widths[i]).cost / max(1, len(tokenize(texts[j])))) for j in range(n)]
@@ -325,7 +333,14 @@ def apply_sheet(conn: sqlite3.Connection, store: Store, source_id: str, sheet_id
         mask, _, _ = ink.mask(source, Box(ln["x"], ln["y"], ln["w"], ln["h"]))
         widths.append(float(mask.any(axis=0).sum()) if mask.size else ln["w"])
     word_widths = [[w["w"] for w in review._line_words(conn, ln["id"]) if w["status"] != "excluded"] for ln in lines]
-    pairs = match_lines(widths, sheet["lines"], word_widths)
+    # How well each written line's ink cuts into each sheet line's words. Lines more than a few places
+    # apart cannot pair (a handful of skipped or extra lines at most), so they are not tried.
+    fits = []
+    for i, ln in enumerate(lines):
+        mask, _, _ = ink.mask(source, Box(ln["x"], ln["y"], ln["w"], ln["h"]))
+        own = refit.own_ink(mask)
+        fits.append([refit.fit_cost(own, t) if abs(i - j) <= FIT_REACH else 2.0 for j, t in enumerate(sheet["lines"])])
+    pairs = match_lines(widths, sheet["lines"], word_widths, fits)
     matched, unmatched_lines, missing = 0, 0, []
     with transaction(conn):
         for li, pj in pairs:
@@ -404,44 +419,71 @@ def _join_rows(conn: sqlite3.Connection, ink: refit.LineInk, source: dict[str, A
     if len(real) < 2:
         return lines
     widest = max(i["x1"] - i["x0"] for i in real)
-    body = float(np.median([i["b1"] - i["b0"] for i in real if i["x1"] - i["x0"] >= 0.3 * widest] or [1]))
-    big = [i for i in real if i["x1"] - i["x0"] >= 0.3 * widest or not i["ok"]]
+    wide = [i for i in real if i["x1"] - i["x0"] >= 0.3 * widest]
+    body = float(np.median([i["b1"] - i["b0"] for i in wide] or [1]))
+    # A row of writing has a lot of ink; a strip of tails or dots under a row can be just as wide but has little.
+    typical_ink = float(np.median([i["ink"] for i in wide] or [1]))
+    big = [i for i in real if (i in wide and i["ink"] >= 0.3 * typical_ink) or not i["ok"]]
     small = [i for i in real if i not in big]
-    # Rows: the long lines, plus any piece whose letter bodies sit at the same height (the end of a row).
+
+    def mid(i: dict[str, Any]) -> float:
+        return (i["b0"] + i["b1"]) / 2
+
+    # The spacing between rows sets every distance below: letter sizes vary (a fraction, capitals), the
+    # spacing of the lines on a sheet does not.
+    mids = sorted(mid(i) for i in big)
+    steps = [b - a for a, b in zip(mids, mids[1:]) if b - a > 1.5 * body]
+    pitch = float(np.median(steps)) if steps else 4.0 * body
+    # Rows: the long lines, plus any piece at the same height beside them (the end of a row, a split equation).
     rows_: list[list[dict[str, Any]]] = []
-    for i in sorted(big, key=lambda i: (i["b0"] + i["b1"]) / 2):
-        mid = (i["b0"] + i["b1"]) / 2
+    for i in sorted(big, key=mid):
         home = None
         for r in rows_:
-            rmid = sum((j["b0"] + j["b1"]) / 2 for j in r) / len(r)
+            rmid = sum(mid(j) for j in r) / len(r)
             apart = all(min(i["x1"], j["x1"]) - max(i["x0"], j["x0"]) < 0.3 * min(i["x1"] - i["x0"], j["x1"] - j["x0"]) for j in r)
-            if abs(mid - rmid) <= 1.2 * body and apart and all(j["ok"] for j in r) and i["ok"]:
+            if abs(mid(i) - rmid) <= 0.3 * pitch and apart and all(j["ok"] for j in r) and i["ok"]:
                 home = r
         if home is None:
             rows_.append([i])
         else:
             home.append(i)
-    # Short pieces (the end of a row, a tail, a dot, the bottom of a fraction): the row whose letters are
-    # nearest in height, if that is closer than half the spacing between rows (else it is a line of its own).
-    centres = sorted(sum((j["b0"] + j["b1"]) / 2 for j in r) / len(r) for r in rows_)
-    steps = [b - a for a, b in zip(centres, centres[1:]) if b - a > body]
-    pitch = float(np.median(steps)) if steps else 4.0 * body
+    # Short or faint pieces (the end of a row, tails, dots, the bottom of a fraction): the row whose letters
+    # are nearest in height, if closer than about half the spacing between rows (else a line of its own).
     for i in small:
         best, dist = None, 0.6 * pitch
-        mid = (i["y0"] + i["y1"]) / 2
+        centre = (i["y0"] + i["y1"]) / 2
         for r in rows_:
             if not all(j["ok"] for j in r):
                 continue
             x0, x1 = min(j["x0"] for j in r), max(j["x1"] for j in r)
-            if i["x1"] < x0 - 6 * body or i["x0"] > x1 + 6 * body:
+            if i["x1"] < x0 - 4 * pitch or i["x0"] > x1 + 4 * pitch:
                 continue
-            d = abs(mid - sum((j["b0"] + j["b1"]) / 2 for j in r) / len(r))
+            d = abs(centre - sum(mid(j) for j in r) / len(r))
             if d < dist:
                 best, dist = r, d
         if best is None:
             rows_.append([i])
         else:
             best.append(i)
+    # Rows made of pieces only (an equation detected in parts) can sit side by side at one height: join them.
+    merged = True
+    while merged:
+        merged = False
+        for a in range(len(rows_)):
+            for b in range(a + 1, len(rows_)):
+                ra, rb = rows_[a], rows_[b]
+                if not all(j["ok"] for j in ra + rb):
+                    continue
+                ma, mb = sum(mid(j) for j in ra) / len(ra), sum(mid(j) for j in rb) / len(rb)
+                ax0, ax1 = min(j["x0"] for j in ra), max(j["x1"] for j in ra)
+                bx0, bx1 = min(j["x0"] for j in rb), max(j["x1"] for j in rb)
+                if abs(ma - mb) <= 0.3 * pitch and min(ax1, bx1) - max(ax0, bx0) < 0.3 * min(ax1 - ax0, bx1 - bx0):
+                    rows_[a] = ra + rb
+                    del rows_[b]
+                    merged = True
+                    break
+            if merged:
+                break
     out = []
     for r in rows_:
         if len(r) == 1:
@@ -458,8 +500,59 @@ def _join_rows(conn: sqlite3.Connection, ink: refit.LineInk, source: dict[str, A
                 review._write(conn, j["line"], {"deleted": 1}, "machine", f"joined_into:{joined['id']}")
                 conn.execute("UPDATE regions SET parent_id = ? WHERE parent_id = ? AND deleted = 0", (joined["id"], j["line"]["id"]))
         out.append(review.get_region(conn, joined["id"]))
+    # Detection drops small marks on their own (the dots of ∴, an ellipsis, a lone full stop) and so ends a
+    # line before them; a sheet line includes them, so its box is widened to take in ink at its height.
+    for k, ln in enumerate(out):
+        if _untouched(conn, ln):
+            wider = _reach_marks(ink, source, ln, pitch)
+            if wider is not None:
+                with transaction(conn):
+                    out[k] = review._write(conn, ln, {"x": wider.x, "w": wider.w}, "machine", f"sheet:{sheet_id}:widen")
     leftover = [ln for ln, i in zip(lines, info) if i is None]
     return sorted(out + leftover, key=lambda r: (r["y"] + r["h"] / 2, r["x"]))
+
+
+def _reach_marks(ink: refit.LineInk, source: dict[str, Any], ln: dict[str, Any], pitch: float) -> Box | None:
+    """The line's box widened to take in ink just beyond its ends at the height of its letters, or None."""
+    reach = 1.5 * pitch
+    x0 = max(0.0, ln["x"] - reach)
+    x1 = min(float(source["processed_w"]), ln["x"] + ln["w"] + reach)
+    band_y0, band_h = ln["y"] + 0.2 * ln["h"], 0.6 * ln["h"]
+    mask, ox, _ = ink.mask(source, Box(x0, band_y0, x1 - x0, band_h))
+    if mask.size == 0:
+        return None
+    cols = mask.any(axis=0)
+    left, right = int(round(ln["x"] - ox)), int(round(ln["x"] + ln["w"] - ox))
+    gap = int(0.8 * pitch)
+    new_left, new_right = left, right
+    x = right
+    while x < len(cols):  # walk right: each next bit of ink within `gap` of the current end joins the line
+        nxt = next((c for c in range(x, min(len(cols), x + gap)) if cols[c]), None)
+        if nxt is None:
+            break
+        end = nxt
+        while end < len(cols) and cols[end]:
+            end += 1
+        if ox + end >= source["processed_w"] - 1:
+            break  # ink running off the page edge is a border or shadow, not writing
+        new_right, x = end, end
+    x = left - 1
+    while x >= 0:
+        nxt = next((c for c in range(x, max(-1, x - gap), -1) if cols[c]), None)
+        if nxt is None:
+            break
+        start = nxt
+        while start >= 0 and cols[start]:
+            start -= 1
+        if ox + start + 1 <= 0:
+            break  # ink running off the page edge is a border or shadow, not writing
+        new_left, x = start + 1, start
+    if new_left == left and new_right == right:
+        return None
+    pad = 4.0
+    a = max(0.0, ox + new_left - (pad if new_left < left else 0))
+    b = min(float(source["processed_w"]), ox + new_right + (pad if new_right > right else 0))
+    return Box(a, ln["y"], b - a, ln["h"])
 
 
 def detect_core(mask: np.ndarray) -> tuple[int, int, int]:
