@@ -631,7 +631,7 @@ async function renderPage(root, sourceId) {
         h('button', { class: 'btn', type: 'button', onClick: async () => {
           const { job_id } = await api(`/api/sources/${sourceId}/detect`, { body: { replace: true } });
           const job = await trackJob(job_id);
-          toast(job.status === 'succeeded' ? `Detection: ${job.result.lines} lines, ${job.result.words} words proposed (untouched proposals replaced; edited ones kept; omitted areas ignored).` : `Detection failed: ${job.error}`, job.status === 'succeeded' ? 'info' : 'error');
+          toast(job.status === 'succeeded' ? `Detection: ${job.result.lines} lines, ${job.result.words} words proposed (untouched proposals replaced; edited ones kept; omitted areas ignored)${job.result.sheet ? `. Text filled in again from sheet ${job.result.sheet.sheet_number}` : ''}.` : `Detection failed: ${job.error}`, job.status === 'succeeded' ? 'info' : 'error');
           loadAnalysis();
         } }, icon('refresh'), 'Re-detect regions'),
         h('a', { class: 'btn', href: `#/review?source=${sourceId}` }, icon('review'), 'Review this page'),

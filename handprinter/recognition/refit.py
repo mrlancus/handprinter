@@ -7,6 +7,7 @@ This only ever replaces untouched machine word boxes, and the result is still a 
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
@@ -48,15 +49,17 @@ def _pieces(mask: np.ndarray, n: int) -> list[tuple[int, int]]:
     return runs
 
 
-def segment_by_count(mask: np.ndarray, lengths: list[int]) -> Segmentation | None:
+def segment_by_count(mask: np.ndarray, lengths: list[float], spaced: list[bool] | None = None) -> Segmentation | None:
     """Cut a line's ink mask into one box per word, given each word's number of characters.
 
     Words are contiguous groups of ink pieces. The cut minimises how far each word's width is
     from its share of the line (by character count), prefers cuts at gaps wider than any gap
     kept inside a word, and may leave out a few stray pieces at either end. Returns None when
-    the ink has fewer pieces than words (words written touching).
+    the ink has fewer pieces than words (words written touching). A `spaced` word (maths such as
+    "λ = h/mv", written with spaces around the =) may hold gaps as wide as those between words.
     """
     n = len(lengths)
+    spaced = spaced or [False] * n
     if n < 1 or mask.size == 0:
         return None
     runs = _pieces(mask, n)
@@ -85,7 +88,7 @@ def segment_by_count(mask: np.ndarray, lengths: list[int]) -> Segmentation | Non
                         inner = max(gap[s + j:s + i - 1], default=0)
                         edges = [gap[s + j - 1]] if s + j > 0 else []
                         edges += [gap[s + i - 1]] if s + i < m else []
-                        if edges and inner >= min(edges):
+                        if edges and inner >= min(edges) and not spaced[k - 1]:
                             c += INNER_GAP_PENALTY
                         if cost[k - 1][j] + c < cost[k][i]:
                             cost[k][i], back[k][i] = cost[k - 1][j] + c, j
@@ -107,7 +110,7 @@ def segment_by_count(mask: np.ndarray, lengths: list[int]) -> Segmentation | Non
         return None
     _, groups, s, e = best
     cuts = [gap[b - 1] for (_, b) in groups[:-1]]
-    inner = [g for a, b in groups for g in gap[a:b - 1]]
+    inner = [g for (a, b), sp in zip(groups, spaced) if not sp for g in gap[a:b - 1]]
     clear = s == 0 and e == m and (not cuts or not inner or min(cuts) >= CLEAR_RATIO * max(1, max(inner)))
     boxes = []
     for a, b in groups:
@@ -142,12 +145,83 @@ class LineInk:
         mask = detect.ink_mask(gray[y0:y1, x0:x1]) if x1 > x0 and y1 > y0 else np.zeros((0, 0), dtype=bool)
         if mask.size:
             mask[detect.ruled_rows(mask, 0.6)] = False  # printed ruling crossing the line (one unbroken stroke)
+            mask &= ~detect.thin_rule_pixels(mask)  # a faint or slightly sloped ruled line touching the letters
             for b in omitted:
                 ox0, oy0 = max(0, int(b.x) - x0), max(0, int(b.y) - y0)
                 ox1, oy1 = int(np.ceil(b.x + b.w)) - x0, int(np.ceil(b.y + b.h)) - y0
                 if ox1 > 0 and oy1 > 0:
                     mask[oy0:oy1, ox0:ox1] = False
         return mask, x0, y0
+
+
+OPERATOR_COMMANDS = r"\\(le|ge|leq|geq|neq|approx|times|cdot|pm|mp|to|rightarrow|leftarrow|Rightarrow|equiv|propto|sim)(?![a-zA-Z])"
+
+
+def maths_width(src: str) -> float:
+    """Roughly how many characters wide LaTeX is when written by hand.
+
+    A command is one symbol, a fraction is as wide as its longer part, and a power or index
+    (written small) counts half.
+    """
+    frac = re.compile(r"\\frac\{([^{}]*)\}\{([^{}]*)\}")
+    while frac.search(src):
+        src = frac.sub(lambda mm: "x" * (max(len(mm.group(1)), len(mm.group(2))) + 1), src)
+    src = re.sub(r"\\(left|right|mathbf|mathrm|text|operatorname|vec|[,;!]|quad)", "", src)
+    # a relation or operator (not one in a power or index, like H⁺) is written with space around it
+    src = re.sub(OPERATOR_COMMANDS, "=", src)
+    src = re.sub(r"\\[a-zA-Z]+", "x", src)
+    ops = len(re.findall(r"[=+<>-]", re.sub(r"[\^_](\{[^{}]*\}|\S)", "", src)))
+    small = sum(len(re.sub(r"[{}\s]", "", a or b)) for a, b in re.findall(r"[\^_](?:\{([^{}]*)\}|(\S))", src))
+    return max(1.0, len(re.sub(r"[{}\s^_]", "", src)) - 0.5 * small + ops)
+
+
+def maths_len(src: str) -> int:
+    return max(1, round(maths_width(src)))
+
+
+def is_spaced(token: str) -> bool:
+    """Maths written with space inside it: around = and other operators, around a fraction or an integral."""
+    for mm in re.finditer(r"\$([^$]*)\$", token):
+        body = re.sub(r"[\^_](\{[^{}]*\}|\S)", "", re.sub(OPERATOR_COMMANDS, "=", mm.group(1)))
+        if re.search(r"[=+<>-]|\\(frac|int|sum|prod)(?![a-zA-Z])", body):
+            return True
+    return False
+
+
+def written_len(token: str) -> float:
+    """How many characters wide a word is on paper: `$\\alpha$,` is two (α and the comma), not nine."""
+    total, rest = 0.0, token
+    for mm in re.finditer(r"\$([^$]*)\$", token):
+        total += maths_width(mm.group(1))
+    rest = re.sub(r"\$[^$]*\$", "", token)
+    return max(1.0, total + len(rest))
+
+
+def own_ink(mask: np.ndarray) -> np.ndarray:
+    """The line's own ink: tails and tops of the lines above and below that reach into the box are left out.
+
+    The letter bodies of the line are the rows holding the middle half of its ink. A separate stroke
+    entirely outside them is a neighbour's when it is cut by the box edge (it continues outside) or
+    lies far from them; dots, accents, a tail written as its own stroke and the parts of a fraction are kept.
+    """
+    if mask.size == 0 or not mask.any():
+        return mask
+    boxes, labels = detect.label_components(mask)
+    h = mask.shape[0]
+    b0, b1, _ = detect._core(mask, 0, 0, mask.shape[1], h)
+    body = max(2, b1 - b0)
+    lo, hi = b0 - 0.25 * body, b1 + 0.25 * body
+    drop = []
+    for k, (_x0, y0, _x1, y1, _a) in enumerate(boxes):
+        if y1 > lo and y0 < hi:
+            continue  # reaches the letter bodies: this line's
+        dist = (lo - y1) if y1 <= lo else (y0 - hi)
+        # (the parts of a fraction or a power sit well above or below, but inside the box)
+        if y0 == 0 or y1 == h or dist > 2.5 * body:
+            drop.append(k)
+    if not drop:
+        return mask
+    return mask & ~np.isin(labels, drop)
 
 
 def implausible(mask: np.ndarray, tokens: list[str], typical_line_h: float | None) -> str | None:
@@ -164,7 +238,7 @@ def implausible(mask: np.ndarray, tokens: list[str], typical_line_h: float | Non
     if typical_line_h and ink_h > 1.9 * typical_line_h:
         return "this box looks taller than one line of writing; split it into lines"
     ink_w = int(mask.any(axis=0).sum())
-    chars = sum(len(t) for t in tokens)
+    chars = sum(written_len(t) for t in tokens)
     ratio = (ink_w / max(1, chars)) / max(1, ink_h)
     if ratio < 0.1:
         return "the text read is too long for this box (it may include words from other lines)"
@@ -178,9 +252,10 @@ def refit_words(
 ) -> tuple[list[Box], bool] | None:
     """Word boxes (processed pixels) for a line known to hold these words, and whether every cut was clear."""
     mask, ox, oy = ink.mask(source, line_box)
+    mask = own_ink(mask)
     if implausible(mask, tokens, typical_line_h):
         return None
-    seg = segment_by_count(mask, [max(1, len(t)) for t in tokens])
+    seg = segment_by_count(mask, [written_len(t) for t in tokens], [is_spaced(t) for t in tokens])
     if seg is None:
         return None
     boxes = [Box(ox + x0 - pad, oy + y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad).clamp(source["processed_w"], source["processed_h"])
