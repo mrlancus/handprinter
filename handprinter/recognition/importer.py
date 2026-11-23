@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
@@ -20,7 +21,7 @@ from handprinter.geometry import Box, Homography
 from handprinter.recognition import align as aligner
 from handprinter.recognition import refit
 from handprinter.recognition.package import load_manifest, load_schema, package_dir
-from handprinter.storage import Store, sha256_file
+from handprinter.storage import Store, atomic_write, sha256_file
 
 UNKNOWN_MODEL = "haiku (subagent alias)"
 FLAG_MAP = {
@@ -73,12 +74,20 @@ def validate_package(store: Store, package_id: str) -> list[ItemCheck]:
 def _check_item(root, entry: dict[str, Any], validator: Draft202012Validator) -> ItemCheck:
     item_id = entry["item_id"]
     path = root / "results" / f"{item_id}.json"
+    chat_path = root / "chat-results" / f"{item_id}.json"
+    if chat_path.is_file():
+        path = chat_path
     if not path.is_file():
         return ItemCheck(item_id, False, ["missing result file"])
     try:
         result = json.loads(path.read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         return ItemCheck(item_id, False, [f"not valid JSON: {exc.__class__.__name__}"])
+    return check_result(root, entry, validator, result)
+
+
+def check_result(root: Path, entry: dict[str, Any], validator: Draft202012Validator, result: Any) -> ItemCheck:
+    item_id = entry["item_id"]
     errors = [f"{'/'.join(map(str, e.absolute_path)) or '(root)'}: {e.message}" for e in validator.iter_errors(result)]
     if errors:
         return ItemCheck(item_id, False, errors[:10])
@@ -104,12 +113,19 @@ def _box_inside(box: list[float], w: int, h: int, slack: float = 0.05) -> bool:
     return x >= -slack * w and y >= -slack * h and x + bw <= w * (1 + slack) and y + bh <= h * (1 + slack)
 
 
-def import_package(conn: sqlite3.Connection, store: Store, package_id: str) -> dict[str, Any]:
+def import_package(conn: sqlite3.Connection, store: Store, package_id: str,
+                   chat_results: dict[str, dict] | None = None) -> dict[str, Any]:
     manifest = load_manifest(store, package_id)
     entries = {e["item_id"]: e for e in manifest["items"]}
     summary = {"imported": 0, "already_imported": 0, "failed": 0, "pending": 0, "protected_human_edits": 0, "lines_refit": 0, "errors": {}}
     ink = refit.LineInk(conn, store)
-    for check in validate_package(store, package_id):
+    root = package_dir(store, package_id)
+    if chat_results is None:
+        checks = validate_package(store, package_id)
+    else:
+        validator = Draft202012Validator(load_schema())
+        checks = [check_result(root, entries[key], validator, value) for key, value in chat_results.items()]
+    for check in checks:
         entry = entries.get(check.item_id)
         if entry is None:
             summary["errors"][check.item_id] = check.errors
@@ -129,12 +145,23 @@ def import_package(conn: sqlite3.Connection, store: Store, package_id: str) -> d
             if not missing:
                 summary["errors"][check.item_id] = check.errors
             conn.execute(
-                "UPDATE recognition_items SET status = ?, error = ?, updated_at = ? WHERE package_id = ? AND item_id = ?",
+                "UPDATE recognition_items SET status = ?, error = ?, updated_at = ? WHERE package_id = ? AND item_id = ? AND status != 'succeeded'",
                 ("pending" if missing else "failed", "; ".join(check.errors)[:1000], now_iso(), package_id, check.item_id),
             )
             continue
         assert check.result is not None
         with transaction(conn):
+            if conn.execute("SELECT status FROM recognition_items WHERE package_id=? AND item_id=?",
+                            (package_id, check.item_id)).fetchone()[0] == "succeeded":
+                summary["already_imported"] += 1
+                continue
+            if chat_results is not None:
+                # Keep the chat answer available for audit, separate from Claude Code's incoming files and cache.
+                chat_dir = root / "chat-results"
+                chat_dir.mkdir(exist_ok=True)
+                atomic_write(chat_dir / f"{check.item_id}.json", dumps(check.result).encode("utf-8"))
+                conn.execute("UPDATE recognition_items SET cache_key=? WHERE package_id=? AND item_id=?",
+                             (f"chat:{package_id}:{check.item_id}", package_id, check.item_id))
             proposal_id, protected, was_refit = _store_result(conn, manifest, entry, check.result, ink)
             conn.execute(
                 "UPDATE recognition_items SET status = 'succeeded', error = NULL, proposal_id = ?, updated_at = ? WHERE package_id = ? AND item_id = ?",
@@ -160,7 +187,7 @@ def _store_result(
         entry["to_source"]["scale_x"], entry["to_source"]["scale_y"], entry["to_source"]["offset_x"], entry["to_source"]["offset_y"]
     )
     source = conn.execute("SELECT * FROM sources WHERE id = ?", (entry["source_id"],)).fetchone()
-    stale = source is None or source["processing_rev"] != entry["source_frame"]["processing_rev"]
+    stale = source is None or source["deleted"] or source["processing_rev"] != entry["source_frame"]["processing_rev"]
     flags = sorted({FLAG_MAP[f] for f in result["quality_flags"]})
     if result["uncertain_spans"]:
         flags.append("uncertain_span")

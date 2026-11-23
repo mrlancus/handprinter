@@ -5,6 +5,7 @@ import { icon } from '../components/icons.js';
 import { callout, emptyState, errorState, flagBadge, loadingState, setupState } from '../components/states.js';
 import { jobLabel, trackJob } from '../jobs.js';
 import { toast } from '../app.js';
+import { openChatPack } from './chat-packs.js';
 import { haikuCuts, sheetPicker, sheetsTab } from './sheets.js';
 
 const PAGE_SIZE = 48;
@@ -247,12 +248,12 @@ async function recognitionDialog(sourceIds, status) {
         per[it.source_id][it.context_type === 'page_overview' ? 'page' : 'line'] += 1;
       }
       mount(content,
-        callout(`These images will leave this computer: they are sent to Anthropic through Claude Code (${p.model}). ${p.usage_note}`, 'review'),
+        callout('Choose how to read these images. Building a pack keeps them on your computer. A manual chat receives only the images and prompt you upload yourself.', 'review'),
         h('dl', { class: 'facts' },
           h('dt', { text: 'Items' }), h('dd', { text: fmt(p.item_count) }),
           h('dt', { text: 'Images' }), h('dd', { text: fmt(p.image_count) }),
           h('dt', { text: 'Total pixels' }), h('dd', { text: `${fmt(p.total_pixels)} (${(p.total_pixels / 1e6).toFixed(1)} MP)` }),
-          h('dt', { text: 'Model' }), h('dd', { class: 'mono', text: p.model })),
+          h('dt', { text: 'Claude Code model' }), h('dd', { class: 'mono', text: p.model })),
         h('table', { class: 'table' }, h('thead', {}, h('tr', {}, h('th', { text: 'Page' }), h('th', { class: 'num', text: 'Overview' }), h('th', { class: 'num', text: 'Line crops' }))),
           h('tbody', {}, Object.entries(per).map(([sid, c]) => h('tr', {},
             h('td', {}, h('img', { class: 'thumb-xs', src: `/api/sources/${sid}/image?variant=thumb`, alt: '' }), h('span', { class: 'mono xs', text: sid })),
@@ -261,28 +262,37 @@ async function recognitionDialog(sourceIds, status) {
         h('p', { class: 'xs muted', text: 'Already-recognised crops with the same image, model and prompt version are skipped (cache). Only open regions without human text are included.' }),
         h('div', { class: 'row' }, h('span', { class: 'spacer' }),
           h('button', { class: 'btn', type: 'button', onClick: () => dialog.close() }, 'Cancel'),
-          h('button', { class: 'btn btn--primary', type: 'button', disabled: p.item_count === 0, onClick: build }, 'Build package')));
+          h('button', { class: 'btn btn--primary', type: 'button', disabled: p.item_count === 0, onClick: () => build(true) }, 'Build chat pack'),
+          h('button', { class: 'btn', type: 'button', disabled: p.item_count === 0, onClick: () => build(false) }, 'Build for Claude Code')));
     } catch (err) { mount(content, errorState(err, preview)); }
   }
 
-  async function build() {
-    mount(content, loadingState(1), h('p', { class: 'small muted', text: 'Building package in the worker…' }));
-    const { job_id } = await api('/api/recognition/packages', { body: { source_ids: sourceIds, include_overview: overview.checked } });
-    const job = await trackJob(job_id);
-    if (job.status !== 'succeeded') { mount(content, errorState(new Error(job.error || job.status))); return; }
-    const r = job.result;
-    mount(content,
-      h('p', {}, `Package `, h('code', { text: r.package_id }), ` written: ${r.to_read ?? r.items} line(s) to read`,
-        r.reused ? `, ${r.reused} filled in from earlier readings (no new read needed)` : '',
-        r.cached_skipped ? `, ${r.cached_skipped} already done` : '', '.'),
-      r.to_read === 0 ? callout(r.reused ? 'Nothing new to read: every line was filled in from an earlier reading. Go to Check.' : 'Nothing new to read: every line on these pages has already been read. Go to Check.') : null,
-      h('p', { class: 'mono xs', text: r.path }),
-      h('ol', { class: 'steps' },
-        h('li', {}, 'Open Claude Code in the Handprinter repository folder.'),
-        h('li', {}, 'Run ', h('code', { text: '/recognise' }), ' — it dispatches the Haiku recogniser subagent and validates every result.'),
-        h('li', {}, 'Come back to ', h('a', { href: '#/sources?tab=recognition', onClick: () => dialog.close() }, 'Recognition packages'), ' and import the results.')),
-      status.headless_recognition ? callout('Headless automation is enabled: you can also run the package from the packages list.') : null,
-      h('div', { class: 'row' }, h('span', { class: 'spacer' }), h('button', { class: 'btn btn--primary', type: 'button', onClick: () => dialog.close() }, 'Done')));
+  /** @param {boolean} manual */
+  async function build(manual) {
+    try {
+      mount(content, loadingState(1), h('p', { class: 'small muted', text: 'Building package in the worker…' }));
+      const { job_id } = await api('/api/recognition/packages', { body: { source_ids: sourceIds, include_overview: overview.checked, manual_chat: manual } });
+      const job = await trackJob(job_id);
+      if (job.status !== 'succeeded') { mount(content, errorState(new Error(job.error || job.status))); return; }
+      const r = job.result;
+      if (manual) {
+        dialog.close();
+        openChatPack(r.package_id);
+        return;
+      }
+      mount(content,
+        h('p', {}, `Package `, h('code', { text: r.package_id }), ` written: ${r.to_read ?? r.items} line(s) to read`,
+          r.reused ? `, ${r.reused} filled in from earlier readings (no new read needed)` : '',
+          r.cached_skipped ? `, ${r.cached_skipped} already done` : '', '.'),
+        r.to_read === 0 ? callout(r.reused ? 'Nothing new to read: every line was filled in from an earlier reading. Go to Check.' : 'Nothing new to read: every line on these pages has already been read. Go to Check.') : null,
+        h('p', { class: 'mono xs', text: r.path }),
+        h('ol', { class: 'steps' },
+          h('li', {}, 'Open Claude Code in the Handprinter repository folder.'),
+          h('li', {}, 'Run ', h('code', { text: '/recognise' }), ' — it dispatches the Haiku recogniser subagent and validates every result.'),
+          h('li', {}, 'Come back to ', h('a', { href: '#/sources?tab=recognition', onClick: () => dialog.close() }, 'Recognition packages'), ' and import the results.')),
+        status.headless_recognition ? callout('Headless automation is enabled: you can also run the package from the packages list.') : null,
+        h('div', { class: 'row' }, h('span', { class: 'spacer' }), h('button', { class: 'btn btn--primary', type: 'button', onClick: () => dialog.close() }, 'Done')));
+    } catch (err) { mount(content, errorState(err, preview)); }
   }
 
   overview.addEventListener('change', preview);
@@ -295,14 +305,18 @@ function recognitionTab(status) {
   async function load() {
     mount(body, loadingState(2));
     try {
-      const pkgs = await api('/api/recognition/packages');
+      const [pkgs, cutPacks] = await Promise.all([api('/api/recognition/packages'), api('/api/chat-packs/word-cuts')]);
+      const cuts = cutPacks.length ? h('section', { class: 'panel stack' }, h('h2', { text: 'Word-box chat packs' }),
+        cutPacks.map((/** @type {any} */ p) => h('div', { class: 'row' },
+          h('button', { class: 'btn btn--sm', onClick: () => openChatPack(p.id, load) }, 'Open chat pack'),
+          h('span', {}, new Date(p.created_at).toLocaleString(), ` · ${p.processed} of ${p.items} processed`)))) : null;
       if (!pkgs.length) {
-        mount(body, emptyState({ title: 'No recognition packages yet', icon: 'send',
+        mount(body, cuts, emptyState({ title: 'No recognition packages yet', icon: 'send',
           body: h('p', {}, 'Select pages under ', h('a', { href: '#/sources', text: 'Pages' }), ' and choose “Prepare recognition…”. Recognition never starts on its own.') }));
         return;
       }
-      mount(body,
-        h('p', { class: 'small muted' }, `Configured recogniser: `, h('code', { text: status.recognition_model }), ` (pinned in .env and .claude/agents/handwriting-recogniser.md). Each result records the model it reports.`),
+      mount(body, cuts,
+        h('p', { class: 'small muted' }, `Claude Code recogniser: `, h('code', { text: status.recognition_model }), ` (pinned in .env and .claude/agents/handwriting-recogniser.md). Each result records the model it reports.`),
         h('div', { class: 'panel' }, h('table', { class: 'table' },
           h('thead', {}, h('tr', {}, ['Package', 'Created', 'Model', 'Imported', 'Pending', 'Failed', ''].map((t) => h('th', { class: ['Imported', 'Pending', 'Failed'].includes(t) ? 'num' : undefined, text: t })))),
           h('tbody', {}, pkgs.map((/** @type {any} */ p) => h('tr', {},
@@ -314,9 +328,10 @@ function recognitionTab(status) {
               p.ready_to_import ? h('div', { class: 'xs', text: `${fmt(p.ready_to_import)} read, not imported` }) : null),
             h('td', { class: 'num' }, p.failed ? h('span', { class: 'badge badge--error', text: fmt(p.failed) }) : '0'),
             h('td', {}, h('div', { class: 'row' },
-              h('button', { class: `btn btn--sm${p.ready_to_import ? ' btn--primary' : ''}`, type: 'button', onClick: () => runJob(`/api/recognition/packages/${p.id}/import`) }, p.ready_to_import ? `Import ${fmt(p.ready_to_import)} results` : 'Import results'),
-              p.failed ? h('button', { class: 'btn btn--sm', type: 'button', onClick: () => api(`/api/recognition/packages/${p.id}/retry-failed`, { method: 'POST' }).then(() => { toast('Failed items reset to pending; run /recognise again.'); load(); }) }, 'Retry failed') : null,
-              status.headless_recognition && p.pending ? h('button', { class: 'btn btn--sm', type: 'button', onClick: () => runJob(`/api/recognition/packages/${p.id}/headless`, {}) }, icon('play'), 'Run headless') : null))))))),
+              p.item_count ? h('button', { class: 'btn btn--sm', onClick: () => openChatPack(p.id, load) }, 'Open chat pack') : null,
+              p.model_configured === 'Manual chat' ? null : h('button', { class: `btn btn--sm${p.ready_to_import ? ' btn--primary' : ''}`, type: 'button', onClick: () => runJob(`/api/recognition/packages/${p.id}/import`) }, p.ready_to_import ? `Import ${fmt(p.ready_to_import)} results` : 'Import results'),
+              p.failed && p.model_configured !== 'Manual chat' ? h('button', { class: 'btn btn--sm', type: 'button', onClick: () => api(`/api/recognition/packages/${p.id}/retry-failed`, { method: 'POST' }).then(() => { toast('Failed items reset to pending; run /recognise again.'); load(); }) }, 'Retry failed') : null,
+              p.model_configured !== 'Manual chat' && status.headless_recognition && p.pending ? h('button', { class: 'btn btn--sm', type: 'button', onClick: () => runJob(`/api/recognition/packages/${p.id}/headless`, {}) }, icon('play'), 'Run headless') : null))))))),
         status.headless_recognition ? null : h('p', { class: 'xs muted', text: 'Headless automation (claude -p) is off. Enable it with HANDPRINTER_HEADLESS_RECOGNITION=1 once doctor shows the claude CLI as logged in.' }));
     } catch (err) { mount(body, errorState(err, load)); }
   }
@@ -645,7 +660,7 @@ async function renderPage(root, sourceId) {
       h('aside', { class: 'stack' },
         h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'What the app did with this page' })),
           h('div', { class: 'panel__body' }, summary)),
-        h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'Word boxes by Haiku' })),
+        h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'Place word boxes' })),
           h('div', { class: 'panel__body' }, haikuCuts([sourceId]))),
         h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'Photographic correction' })),
           h('div', { class: 'panel__body stack' },

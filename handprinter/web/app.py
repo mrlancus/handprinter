@@ -22,7 +22,7 @@ from handprinter.adapters import all_adapters
 from handprinter.config import MAX_UPLOAD_BYTES, ONLINE_MAX_UPLOAD_BYTES, Settings
 from handprinter.db import connect, dumps, init_db, new_id, now_iso, row_dict, transaction
 from handprinter.geometry import Box
-from handprinter.recognition import package as recpkg
+from handprinter.recognition import chat, package as recpkg
 from handprinter.storage import Store, check_id
 from handprinter.web import schemas as S
 from handprinter.web.security import SESSION_COOKIE, SESSION_MAX_AGE, LoginLimiter, client_key, is_https, make_guard, session_value
@@ -481,6 +481,49 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def link_before_after(body: S.BeforeAfterIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         return {"id": review.link_before_after(conn, body.before_id, body.after_id, body.note)}
 
+    @app.post("/api/chat-packs/word-cuts")
+    def build_chat_cuts(body: S.WordCutsIn, conn: sqlite3.Connection = Depends(db)) -> dict:
+        for sid in body.source_ids or []:
+            pages.get_source(conn, sid)
+        return {"job_id": jobs.enqueue(conn, "build_chat_cuts", body.model_dump())}
+
+    @app.get("/api/chat-packs/word-cuts")
+    def list_chat_cuts(conn: sqlite3.Connection = Depends(db)) -> list[dict]:
+        return [dict(row) for row in conn.execute(
+            """SELECT p.*, count(r.item_id) AS processed FROM chat_cut_packs p
+               LEFT JOIN chat_cut_receipts r ON r.pack_id=p.id GROUP BY p.id ORDER BY p.created_at DESC""")]
+
+    @app.get("/api/chat-packs/{pack_id}")
+    def chat_batch(pack_id: str, batch: int | None = Query(None, ge=1), conn: sqlite3.Connection = Depends(db)) -> dict:
+        return chat.describe(conn, store, pack_id, batch)
+
+    @app.get("/api/chat-packs/{pack_id}/batches/{batch}/download")
+    def chat_zip(pack_id: str, batch: int, conn: sqlite3.Connection = Depends(db)) -> Response:
+        data = chat.bundle(conn, store, pack_id, batch)
+        return Response(data, media_type="application/zip", headers={
+            "Content-Disposition": f'attachment; filename="{pack_id}-batch-{batch}.zip"', "Cache-Control": "no-store"})
+
+    @app.get("/api/chat-packs/{pack_id}/batches/{batch}/images/{item_id}.png")
+    def chat_image(pack_id: str, batch: int, item_id: str) -> FileResponse:
+        root, items = chat.open_pack(store, pack_id)
+        item = next((it for it in chat.batch_items(items, batch) if it["item_id"] == item_id), None)
+        if item is None:
+            raise HTTPException(404, "Image is not part of this batch.")
+        return FileResponse(chat.image_path(root, item), media_type="image/png", headers={"Cache-Control": "no-store"})
+
+    @app.post("/api/chat-packs/{pack_id}/batches/{batch}/reply")
+    def chat_reply(pack_id: str, batch: int, body: S.ChatReplyIn, conn: sqlite3.Connection = Depends(db)) -> dict:
+        _, items = chat.open_pack(store, pack_id)
+        chat.parse_reply(body.reply, pack_id, batch, chat.batch_items(items, batch))
+        staged_id = new_id("stg")
+        staged = store.staging(staged_id)
+        staged.write_text(body.reply, encoding="utf-8")
+        try:
+            return {"job_id": jobs.enqueue(conn, "import_chat_reply", {"pack_id": pack_id, "batch": batch, "staged_id": staged_id})}
+        except Exception:
+            staged.unlink(missing_ok=True)
+            raise
+
     # ---------- recognition ----------
     @app.post("/api/recognition/preview")
     def recognition_preview(body: S.RecognitionIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
@@ -518,7 +561,8 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def headless_run(package_id: str, body: S.HeadlessIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         if not settings.headless_recognition:
             raise HTTPException(409, "headless recognition is off; set HANDPRINTER_HEADLESS_RECOGNITION=1 or run /recognise in Claude Code")
-        recpkg.load_manifest(store, package_id)
+        if recpkg.load_manifest(store, package_id)["model_configured"] == recpkg.MANUAL_MODEL:
+            raise HTTPException(409, "This package is for manual chat. Open its chat pack.")
         return {"job_id": jobs.enqueue(conn, "headless_recognition", {"package_id": package_id, "item_ids": body.item_ids})}
 
     @app.post("/api/recognition/packages/{package_id}/retry-failed")

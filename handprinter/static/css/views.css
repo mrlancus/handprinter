@@ -365,3 +365,5 @@
 .sh-picker select { max-width: 16rem; }
 @media (pointer: coarse) { .sh-line { font-size: 1.5rem; } }
 .sh .panel { padding: var(--sp-4); }
+
+.chat-crop { display: block; max-width: 100%; height: auto; }

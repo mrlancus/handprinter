@@ -21,6 +21,7 @@ from handprinter.recognition import MAX_LONG_EDGE, MAX_PIXELS, PROMPT_VERSION, S
 from handprinter.storage import Store, atomic_write, sha256_bytes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MANUAL_MODEL = "Manual chat"
 OPEN_STATUSES = ("unprocessed", "proposed", "needs_review")
 
 
@@ -271,6 +272,6 @@ def pending_packages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                   SUM(CASE WHEN i.status = 'pending' THEN 1 ELSE 0 END) AS pending,
                   SUM(CASE WHEN i.status = 'failed' THEN 1 ELSE 0 END) AS failed
            FROM recognition_packages p JOIN recognition_items i ON i.package_id = p.id
-           GROUP BY p.id HAVING pending > 0 OR failed > 0 ORDER BY p.created_at""",
+           WHERE p.model_configured != ? GROUP BY p.id HAVING pending > 0 OR failed > 0 ORDER BY p.created_at""", (MANUAL_MODEL,),
     ).fetchall()
     return [dict(r) for r in rows]

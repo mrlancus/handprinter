@@ -5,7 +5,7 @@ Full requirements: [docs/build-brief.md](docs/build-brief.md). Hand-off state: [
 
 ## Hard rules
 
-- Everything is local. No Anthropic API, SDK or API keys. Recognition only via Claude Code (Haiku subagent, file hand-off).
+- Everything is local. No Anthropic API, SDK or API keys. Recognition via Claude Code or a user-downloaded manual chat pack (prompt and PNGs, pasted JSON reply).
 - Recognition output is a **proposal**. Never overwrite a human edit without an explicit user action.
 - Preserve originals byte-for-byte. Cut training crops from the full-resolution working image (geometry only), PNG.
 - Never beautify handwriting: perspective correction only, no slant/spacing/baseline fixes.

@@ -25,7 +25,7 @@ from handprinter.db import new_id, now_iso, transaction
 from handprinter.geometry import Box
 from handprinter.recognition import MAX_LONG_EDGE, refit
 from handprinter.recognition.align import tokenize
-from handprinter.storage import Store, atomic_write
+from handprinter.storage import Store, atomic_write, sha256_file
 
 PROMPT_VERSION = "c1"
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -61,7 +61,7 @@ Write `results/<item_id>.json` as: {"item_id": "...", "cuts": [3, 7, null, 12], 
 
 
 def package_dir(store: Store, package_id: str) -> Path:
-    return store.dir("recognition/cuts") / package_id
+    return store.dir("recognition/chat-cuts" if package_id.startswith("ccut_") else "recognition/cuts") / package_id
 
 
 def _font(size: int) -> ImageFont.ImageFont:
@@ -157,12 +157,12 @@ def _untouched(conn: sqlite3.Connection, w: dict[str, Any]) -> bool:
 
 
 def build(conn: sqlite3.Connection, store: Store, scope: str = "amber", source_ids: list[str] | None = None,
-          progress: Callable[[float, str], None] = lambda f, m: None) -> dict[str, Any]:
+          progress: Callable[[float, str], None] = lambda f, m: None, *, manual: bool = False) -> dict[str, Any]:
     """Write a word-cut package for the chosen lines. Returns its id and item count (0: nothing to do)."""
     lines = plan_lines(conn, scope, source_ids)
     if not lines:
         return {"package_id": None, "items": 0}
-    package_id = new_id("cut")
+    package_id = new_id("ccut" if manual else "cut")
     root = package_dir(store, package_id)
     (root / "images").mkdir(parents=True)
     (root / "results").mkdir()
@@ -192,9 +192,16 @@ def build(conn: sqlite3.Connection, store: Store, scope: str = "amber", source_i
             "line_id": line["id"], "line_revision": line["revision"], "source_id": line["source_id"],
             "processing_rev": source["processing_rev"],
         })
+        if manual:
+            words = review._line_words(conn, line["id"])
+            items[-1]["word_revisions"] = {w["id"]: w["revision"] for w in words}
+            items[-1]["image_sha256"] = sha256_file(root / "images" / f"{item_id}.png")
     manifest = {"package_id": package_id, "kind": "word_cuts", "prompt_version": PROMPT_VERSION, "created_at": now_iso(),
                 "scope": scope, "items": items}
     atomic_write(root / "manifest.json", json.dumps(manifest, indent=1, ensure_ascii=False).encode("utf-8"))
+    if manual and items:
+        conn.execute("INSERT INTO chat_cut_packs (id, created_at, items) VALUES (?,?,?)",
+                     (package_id, manifest["created_at"], len(items)))
     return {"package_id": package_id, "items": len(items), "path": str(root)}
 
 
@@ -278,22 +285,29 @@ def word_spans(item: dict[str, Any], cuts: list[int | None], own: np.ndarray, ox
     return spans
 
 
-def apply(conn: sqlite3.Connection, store: Store, package_id: str) -> dict[str, Any]:
+def apply(conn: sqlite3.Connection, store: Store, package_id: str, *,
+          answers: dict[str, dict] | None = None, model: str = "Haiku") -> dict[str, Any]:
     """Cut the word boxes of every answered line at the gaps Haiku chose (untouched lines only)."""
     root = package_dir(store, package_id)
     manifest = load_manifest(store, package_id)
     ink = refit.LineInk(conn, store)
     out = {"lines_cut": 0, "unsure": 0, "skipped": [], "failed": []}
     for item in manifest["items"]:
-        path = root / "results" / f"{item['item_id']}.json"
-        if not path.is_file():
-            out["skipped"].append({"item": item["item_id"], "why": "not answered"})
-            continue
-        try:
-            result = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            out["failed"].append({"item": item["item_id"], "why": "result is not valid JSON"})
-            continue
+        item_id = item["item_id"]
+        if answers is not None:
+            if item_id not in answers:
+                continue
+            result = answers[item_id]
+        else:
+            path = root / "results" / f"{item['item_id']}.json"
+            if not path.is_file():
+                out["skipped"].append({"item": item["item_id"], "why": "not answered"})
+                continue
+            try:
+                result = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                out["failed"].append({"item": item["item_id"], "why": "result is not valid JSON"})
+                continue
         errors = check_result(item, result)
         if errors:
             out["failed"].append({"item": item["item_id"], "why": "; ".join(errors)})
@@ -303,8 +317,16 @@ def apply(conn: sqlite3.Connection, store: Store, package_id: str) -> dict[str, 
         except Exception:  # deleted since
             out["skipped"].append({"item": item["item_id"], "why": "line no longer exists"})
             continue
+        if line["deleted"]:
+            out["skipped"].append({"item": item_id, "why": "line deleted"})
+            continue
         source = pages.get_source(conn, line["source_id"])
-        words = [w for w in review._line_words(conn, line["id"]) if w["status"] != "excluded"]
+        all_words = review._line_words(conn, line["id"])
+        words = [w for w in all_words if w["status"] != "excluded"]
+        if answers is not None and (len(all_words) != len(words) or
+                                    {w["id"]: w["revision"] for w in all_words} != item["word_revisions"]):
+            out["skipped"].append({"item": item_id, "why": "word boxes changed or were excluded"})
+            continue
         if (line["deleted"] or line["revision"] != item["line_revision"] or source["processing_rev"] != item["processing_rev"]
                 or line["status"] not in OPEN or not all(_untouched(conn, w) for w in words)):
             out["skipped"].append({"item": item["item_id"], "why": "the line changed since it was sent"})
@@ -328,10 +350,21 @@ def apply(conn: sqlite3.Connection, store: Store, package_id: str) -> dict[str, 
             out["failed"].append({"item": item["item_id"], "why": "a word would have no ink"})
             continue
         unsure = bool(result.get("unsure")) or None in result["cuts"]
-        note = "word edges chosen by Haiku" + ("; a guess, check them" if unsure else "")
+        note = f"word edges chosen by {model}" + ("; a guess, check them" if unsure else "")
         if result.get("note"):
             note += f" ({str(result['note'])[:200]})"
         with transaction(conn):
+            # Geometry was calculated outside the write lock. Recheck edits before replacing boxes.
+            current = review.get_region(conn, line["id"])
+            current_words = [w for w in review._line_words(conn, line["id"]) if w["status"] != "excluded"]
+            if (current["revision"] != item["line_revision"] or current["deleted"]
+                    or pages.get_source(conn, line["source_id"])["processing_rev"] != item["processing_rev"]
+                    or [(w["id"], w["revision"]) for w in current_words] != [(w["id"], w["revision"]) for w in words]):
+                out["skipped"].append({"item": item_id, "why": "the line changed during import"})
+                continue
+            if answers is not None:
+                conn.execute("INSERT INTO chat_cut_receipts (pack_id,item_id,state,model) VALUES (?,?,?,?)",
+                             (package_id, item_id, "applied", model))
             for w in words:
                 review._write(conn, w, {"deleted": 1}, "machine", f"word_cuts:{package_id}")
             for b, token in zip(boxes, item["words"]):
@@ -342,6 +375,10 @@ def apply(conn: sqlite3.Connection, store: Store, package_id: str) -> dict[str, 
             review._write(conn, current, {"flags": sorted(flags)}, "machine", f"word_cuts:{package_id}")
         out["lines_cut"] += 1
         out["unsure"] += int(unsure)
+    if answers is not None:
+        conn.executemany("INSERT OR IGNORE INTO chat_cut_receipts (pack_id,item_id,state,model) VALUES (?,?,?,?)",
+                         [(package_id, entry["item"], "stale", model) for entry in out["skipped"]])
+        return out
     atomic_write(root / "applied.json", json.dumps({**out, "applied_at": now_iso()}, indent=1).encode("utf-8"))
     return out
 
