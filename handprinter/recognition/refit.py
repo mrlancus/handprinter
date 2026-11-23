@@ -154,7 +154,7 @@ class LineInk:
         return mask, x0, y0
 
 
-OPERATOR_COMMANDS = r"\\(le|ge|leq|geq|neq|approx|times|cdot|pm|mp|to|rightarrow|leftarrow|Rightarrow|equiv|propto|sim)(?![a-zA-Z])"
+OPERATOR_COMMANDS = r"\\(le|ge|leq|geq|neq|approx|times|cdot|pm|mp|to|rightarrow|leftarrow|Rightarrow|equiv|propto|sim|cup|cap|in|notin|subset|subseteq|supset|setminus)(?![a-zA-Z])"
 
 
 def maths_width(src: str) -> float:
@@ -212,12 +212,25 @@ def own_ink(mask: np.ndarray) -> np.ndarray:
     body = max(2, b1 - b0)
     lo, hi = b0 - 0.25 * body, b1 + 0.25 * body
     drop = []
-    for k, (_x0, y0, _x1, y1, _a) in enumerate(boxes):
+    near = max(3, int(0.15 * body))
+    for k, (x0, y0, x1, y1, _a) in enumerate(boxes):
         if y1 > lo and y0 < hi:
             continue  # reaches the letter bodies: this line's
         dist = (lo - y1) if y1 <= lo else (y0 - hi)
         # (the parts of a fraction or a power sit well above or below, but inside the box)
-        if y0 == 0 or y1 == h or dist > 2.5 * body:
+        if dist > 2.5 * body:
+            drop.append(k)
+        elif y0 == 0 or y1 == h:
+            # Cut by the box edge: a neighbour's stroke, unless it carries on straight from this line's
+            # letters (a tail split off them by a ruled line running along the foot of the writing).
+            if y1 == h and y0 > 0:
+                above = mask[max(0, y0 - near):y0, x0:x1] & (labels[max(0, y0 - near):y0, x0:x1] != k)
+                if above.any():
+                    continue
+            if y0 == 0 and y1 < h:
+                below = mask[y1:y1 + near, x0:x1] & (labels[y1:y1 + near, x0:x1] != k)
+                if below.any():
+                    continue
             drop.append(k)
     if not drop:
         return mask
