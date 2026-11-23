@@ -29,7 +29,7 @@ Frontend: browser-native ES modules + JSDoc, checked by `tsc --checkJs` (dev onl
 | `handprinter/` | Python package: `config`, `db`, `geometry`, `ingest`, `preprocess`, `detect`, `review`, `recognition/`, `dataset`, `jobs`, `worker`, `adapters/`, `evaluation`, `studio`, `doctor`, `web/` |
 | `handprinter/static/` | Frontend: `index.html`, `css/tokens.css` (design tokens), `css/*.css`, `js/*.js`, `vendor/mathjax/` (vendored, local LaTeX rendering) |
 | `prompts/recognition/` | Versioned recognition prompts (`v1.md`; `v2.md` adds LaTeX maths; current `v3.md` fades context so only the target line is read) |
-| `.claude/agents/`, `.claude/skills/` | Haiku recogniser subagent and `/recognise` skill |
+| `.claude/agents/`, `.claude/skills/` | Haiku subagents (`handwriting-recogniser`, `word-cutter`) and `/recognise` skill |
 | `tests/` | pytest suite + fixture generators (non-personal, synthetic) |
 | `scripts/` | Launchers (`setup_models.ps1` via `SetupModels.bat` sets up the model environment), screenshot harness |
 | `relay/` | Optional Cloudflare Worker giving online mode a fixed free workers.dev address (`worker.js`, tests: `node --test relay/worker.test.mjs`) |

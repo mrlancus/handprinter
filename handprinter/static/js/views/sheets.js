@@ -219,6 +219,37 @@ function refillAll() {
   return h('section', { class: 'panel stack' },
     h('div', { class: 'row row--between' }, h('h2', { text: 'Already uploaded sheets' }), btn),
     h('p', { class: 'small muted', text: 'After an update that improves word cutting, this fills every uploaded sheet page in again. Boxes and text you typed, moved or approved stay as they are.' }),
+    status,
+    haikuCuts(null));
+}
+
+/**
+ * Ask Haiku where the words separate: the app numbers every gap in a line's ink, Haiku picks the gaps
+ * between words, the app cuts there. For every page (`sourceIds` null) or the given pages.
+ * @param {string[] | null} sourceIds
+ */
+export function haikuCuts(sourceIds) {
+  const scope = /** @type {HTMLSelectElement} */ (h('select', { 'aria-label': 'Which lines' },
+    h('option', { value: 'amber' }, 'Amber lines only'), h('option', { value: 'all' }, 'All unapproved lines')));
+  const status = h('p', { class: 'small', 'aria-live': 'polite' });
+  const btn = h('button', { class: 'btn btn--primary', type: 'button', onClick: async () => {
+    btn.setAttribute('disabled', '');
+    status.textContent = 'Haiku is looking at the lines… (about a minute per 10 lines; you can keep working)';
+    try {
+      const { job_id } = await api('/api/word-cuts', { body: { scope: scope.value, source_ids: sourceIds } });
+      const job = await trackJob(job_id);
+      if (job.status !== 'succeeded') throw new Error(job.error || 'failed');
+      const r = job.result;
+      status.textContent = r.waiting
+        ? `${r.lines} line(s) are ready for Haiku. ${r.note}.`
+        : r.lines === 0 ? `Nothing to do: ${r.note}.`
+          : `Done: ${r.lines_cut} of ${r.lines} line(s) cut where Haiku chose${r.unsure ? `; ${r.unsure} it was unsure of stay amber` : ''}${r.failed.length ? `; ${r.failed.length} could not be used` : ''}. Check them in Check.`;
+    } catch (err) { status.textContent = ''; toast(err instanceof Error ? err.message : String(err), 'error'); }
+    btn.removeAttribute('disabled');
+  } }, icon('review'), 'Ask Haiku to place word boxes');
+  return h('div', { class: 'stack' },
+    h('div', { class: 'row' }, scope, btn),
+    h('p', { class: 'small muted', text: 'Haiku looks at each line with its gaps numbered and says which gaps fall between words; the boxes are then cut exactly there. Only boxes you have not touched change, and the words still wait for your approval. Uses your Claude plan through Claude Code on the PC.' }),
     status);
 }
 

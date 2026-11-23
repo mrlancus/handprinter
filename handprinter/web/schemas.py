@@ -207,3 +207,8 @@ class CompositionSave(BaseModel):
 
 class LoginIn(BaseModel):
     token: str = Field(max_length=200)
+
+
+class WordCutsIn(BaseModel):
+    scope: Literal["amber", "all"] = "amber"
+    source_ids: list[str] | None = Field(default=None, max_length=500)

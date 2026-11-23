@@ -182,6 +182,12 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def get_sheet(sheet_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         return sheets.get_sheet(conn, sheet_id)
 
+    @app.post("/api/word-cuts")
+    def haiku_word_cuts(body: S.WordCutsIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        for sid in body.source_ids or []:
+            pages.get_source(conn, sid)
+        return {"job_id": jobs.enqueue(conn, "haiku_cuts", {"scope": body.scope, "source_ids": body.source_ids})}
+
     @app.post("/api/sheets/refill")
     def refill_sheets(conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         return {"job_id": jobs.enqueue(conn, "refill_sheets", {})}
