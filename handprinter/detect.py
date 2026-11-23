@@ -24,6 +24,7 @@ class DetectedLine:
     may_hold_several: bool = False  # tall band that could not be split cleanly into lines
     touches_neighbour: bool = False  # split from a line whose strokes touch this one
     words_at_edge: frozenset[int] = frozenset()  # indexes of words that run off the photo edge
+    not_a_line: bool = False  # sideways writing, a bracket or a drawing stroke: kept, but not sent for reading
 
 
 @dataclass
@@ -113,7 +114,8 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
 
     # Word-first: letters join into word pieces, pieces into a line only when their letter bodies sit at
     # the same height and close together. Columns, headings and side notes separate by themselves.
-    raw_lines = find_lines(clean)
+    th = text_height(components(clean))
+    raw_lines = find_lines(clean, th or None)
     boxes = [Box(min(wd[0] for wd in ws), min(wd[1] for wd in ws), max(wd[2] for wd in ws) - min(wd[0] for wd in ws),
                  max(wd[3] for wd in ws) - min(wd[1] for wd in ws)) for ws in raw_lines]
     heights = sorted(b.h for b in boxes)
@@ -122,13 +124,19 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
     for ws, line_box in zip(raw_lines, boxes):
         if line_box.w * line_box.h < 12:
             continue
+        ink = int(clean[int(line_box.y):int(line_box.y + line_box.h), int(line_box.x):int(line_box.x + line_box.w)].sum())
+        # Specks, dots and stray strokes on their own are not lines of writing: reading them wastes a request.
+        if th and ((line_box.w < 1.6 * th and line_box.h < 1.6 * th) or ink < 0.6 * th * th):
+            continue
+        # Much taller than wide: sideways margin writing, a bracket, part of a drawing.
+        sideways = bool(th) and line_box.h > 1.5 * line_box.w and line_box.h > 1.6 * th
         words = [Box(x0, y0, x1 - x0, y1 - y0) for x0, y0, x1, y1 in ws]
         overlaps = any(line_box.intersection_area(r.pad(2)) > 0 for r in rulings)
         edge = 2  # px at work scale: writing that runs to the photo edge is probably cut off
         at_edge = frozenset(i for i, wb in enumerate(words) if wb.x <= edge or wb.x + wb.w >= w - edge or wb.y <= edge or wb.y + wb.h >= h - edge)
         several = len(heights) >= 3 and line_box.h > 1.9 * typical
         touching = any(o is not line_box and line_box.intersection_area(o) > 0.02 * line_box.w * line_box.h for o in boxes)
-        lines.append(DetectedLine(line_box, words, overlaps, several, touching, at_edge))
+        lines.append(DetectedLine(line_box, words, overlaps, several and not sideways, touching, at_edge, sideways))
     # reading order: column by column (blocks from an XY cut), top to bottom inside each
     blocks = xy_blocks(clean)
 
@@ -148,7 +156,7 @@ def detect_layout(img: Image.Image, omit: list[Box] | None = None) -> Detection:
 
     return Detection(
         lines=[DetectedLine(up(line.box), [up(wb) for wb in line.words], line.overlaps_ruling, line.may_hold_several,
-                            line.touches_neighbour, line.words_at_edge) for line in lines],
+                            line.touches_neighbour, line.words_at_edge, line.not_a_line) for line in lines],
         rulings=[Box(0, r.y * inv, img.width, max(1.0, r.h * inv)) for r in rulings]
         + [Box(r.x * inv, 0, max(1.0, r.w * inv), img.height) for r in vertical_rulings],
     )

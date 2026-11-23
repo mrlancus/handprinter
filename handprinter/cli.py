@@ -165,7 +165,17 @@ def cmd_backup(settings: Settings, dest: Path) -> int:
     return 0
 
 
+def _utf8_console() -> None:
+    """Print any character (→, LaTeX, accents) even where the console defaults to a legacy code page (Windows cp1252)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_console()
     parser = argparse.ArgumentParser(prog="handprinter", description="Local handwriting dataset and generation studio")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="start web server and worker (the normal launch command)")

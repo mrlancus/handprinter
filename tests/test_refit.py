@@ -216,3 +216,17 @@ def test_sloping_close_lines_in_two_columns_stay_one_line_each():
     for line in found.lines:
         assert line.box.x + line.box.w < 960 or line.box.x > 960, f"line runs across columns: {line.box}"
     assert words_per_line == sorted(len(t.split()) for t in left + right)
+
+
+def test_specks_are_not_lines_and_sideways_writing_is_not_sent_for_reading():
+    img = _hand_page([(90, 80, "first line here"), (90, 230, "second line here"), (90, 380, "third line here")], size=(1200, 700))
+    draw = ImageDraw.Draw(img)
+    for x, y in ((700, 150), (900, 320), (1000, 500)):  # stray dots and specks
+        draw.ellipse([x, y, x + 6, y + 6], fill=(30, 30, 40))
+    side = Image.new("L", (300, 60), 0)
+    ImageDraw.Draw(side).text((5, 5), "margin note", fill=255, font=_font(36))
+    img.paste((30, 30, 40), (1100, 150), side.rotate(90, expand=True))  # written up the margin
+    found = detect.detect_layout(img)
+    readable = [line for line in found.lines if not line.not_a_line]
+    assert len(readable) == 3, [line.box for line in found.lines]
+    assert any(line.not_a_line and line.box.x > 1090 for line in found.lines)

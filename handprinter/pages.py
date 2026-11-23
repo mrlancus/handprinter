@@ -132,6 +132,13 @@ def run_detection(conn: sqlite3.Connection, store: Store, source_id: str, replac
             if overlaps(line.box, kept_lines):
                 created["skipped_overlapping"] += 1
                 continue
+            if line.not_a_line:
+                # kept visible for you to judge, but as a block: only lines are sent for reading
+                review.create_region(conn, source, "block", line.box, actor="detector", cls="uncertain", status="needs_review",
+                                     flags=["not_a_line"], review_reason="sideways writing, a bracket or part of a drawing; not sent for "
+                                     "reading. Draw a line box over it if it is writing you want to keep.")
+                created["blocks"] = created.get("blocks", 0) + 1
+                continue
             line_flags = flags + (["may_be_several_lines"] if line.may_hold_several else [])
             reason = "this box may hold more than one line of writing; split it if so" if line.may_hold_several else None
             line_region = review.create_region(conn, source, "line", line.box, actor="detector", flags=line_flags, review_reason=reason)
