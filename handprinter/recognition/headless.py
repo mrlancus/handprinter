@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Callable
 
@@ -82,20 +82,33 @@ def run_package(
     return run_items(settings, job_dir, todo, AGENT_NAME, recognition_task, progress, cancelled)
 
 
+LIMIT_WORDS = ("usage limit", "rate limit", "limit reached", "hit your limit", "429", "overloaded")
+
+
+def _hit_limit(text: str) -> bool:
+    low = text.lower()
+    return any(w in low for w in LIMIT_WORDS)
+
+
 def run_items(
     settings: Settings, job_dir: Path, todo: list[str], agent: str, task: Callable[[Path, list[str]], str],
     progress: Callable[[float, str], None], cancelled: Callable[[], bool],
+    answered: Callable[[], int] | None = None,
 ) -> dict[str, Any]:
-    """Run `agent` over the items in chunks through `claude -p`, several chunks at a time."""
+    """Run `agent` over the items in chunks through `claude -p`, several chunks at a time.
+
+    Progress is reported every few seconds as answers arrive (`answered` counts them), not only when a
+    chunk ends. When Claude reports a usage or rate limit, no further chunks are started: what was
+    answered so far is kept, and running again later carries on.
+    """
     status = cli_status()
     if not (status["installed"] and status["logged_in"]):
         raise RuntimeError(f"headless recognition unavailable: {status['detail'] or 'not logged in'}; run `claude auth login`")
     chunks = [todo[i:i + CHUNK_SIZE] for i in range(0, len(todo), CHUNK_SIZE)]
     outcomes: list[dict[str, Any]] = []
+    limit_hit = False
 
     def run_chunk(chunk: list[str]) -> dict[str, Any]:
-        if cancelled():
-            return {"items": chunk, "ok": False, "detail": "cancelled"}
         cmd = build_command(status["path"], settings, job_dir, chunk, agent, task)
         try:
             # cwd is the package directory: with acceptEdits, writes are confined to it.
@@ -107,12 +120,39 @@ def run_items(
             out = json.loads(proc.stdout)
             models = sorted((out.get("modelUsage") or {}).keys())
             detail = "error" if out.get("is_error") else "ok"
+            if out.get("is_error") and _hit_limit(str(out.get("result", ""))):
+                detail = "usage limit"
         except json.JSONDecodeError:
-            detail = f"exit {proc.returncode}"
-        return {"items": chunk, "ok": proc.returncode == 0, "detail": detail, "models_reported_by_cli": models}
+            detail = "usage limit" if _hit_limit(proc.stdout + proc.stderr) else f"exit {proc.returncode}"
+        return {"items": chunk, "ok": proc.returncode == 0 and detail == "ok", "detail": detail, "models_reported_by_cli": models}
+
+    pending = list(chunks)
+    running: set[Future[dict[str, Any]]] = set()
+    total = max(1, len(todo))
+    start = answered() if answered else 0
+
+    def report() -> None:
+        if answered:
+            done = answered() - start
+            progress(min(1.0, done / total), f"Haiku: {done} of {len(todo)} answered")
+        else:
+            progress(len(outcomes) / max(1, len(chunks)), f"chunk {len(outcomes)}/{len(chunks)}")
 
     with ThreadPoolExecutor(max_workers=settings.headless_concurrency) as pool:
-        for done, outcome in enumerate(pool.map(run_chunk, chunks), start=1):
-            outcomes.append(outcome)
-            progress(done / max(1, len(chunks)), f"chunk {done}/{len(chunks)}")
-    return {"chunks": outcomes, "items_attempted": len(todo)}
+        while pending or running:
+            stop = limit_hit or cancelled()
+            while pending and not stop and len(running) < settings.headless_concurrency:
+                running.add(pool.submit(run_chunk, pending.pop(0)))
+            if stop:
+                for chunk in pending:
+                    outcomes.append({"items": chunk, "ok": False, "detail": "usage limit" if limit_hit else "cancelled"})
+                pending = []
+            if not running:
+                break
+            done, running = wait(running, timeout=3, return_when=FIRST_COMPLETED)
+            for f in done:
+                outcome = f.result()
+                outcomes.append(outcome)
+                limit_hit = limit_hit or outcome["detail"] == "usage limit"
+            report()
+    return {"chunks": outcomes, "items_attempted": len(todo), "usage_limit": limit_hit}

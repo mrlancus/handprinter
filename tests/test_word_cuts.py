@@ -88,3 +88,35 @@ def test_without_headless_the_package_waits_for_claude_code(conn, store, setting
     assert out["waiting"] and out["lines"] == len(LINES)
     assert [p["id"] for p in cuts.pending(store)] == [out["package_id"]]
     assert cuts.haiku_cuts(conn, store, settings, "amber", None, lambda f, m: None, lambda: False)["lines"] == 0  # clean page: nothing amber
+
+
+def test_a_round_stopped_by_the_usage_limit_keeps_its_answers_and_carries_on(conn, store, settings, import_bytes, monkeypatch):
+    from dataclasses import replace
+
+    from handprinter.recognition import headless
+
+    _page(conn, store, import_bytes)
+    calls = []
+
+    def fake_run(settings_, root, todo, agent, task, progress, cancelled, answered=None):
+        """Haiku answers the first two lines, then Claude reports the usage limit."""
+        calls.append(list(todo))
+        manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        for item in [it for it in manifest["items"] if it["item_id"] in todo][:2]:
+            _answer(store, manifest["package_id"], item, _true_cuts(conn, item))
+        return {"chunks": [], "items_attempted": len(todo), "usage_limit": True}
+
+    monkeypatch.setattr(headless, "run_items", fake_run)
+    on = replace(settings, headless_recognition=True)
+    first = cuts.haiku_cuts(conn, store, on, "all", None, lambda f, m: None, lambda: False)
+    assert first["lines_cut"] == 2 and "usage limit" in first["note"]
+    second = cuts.haiku_cuts(conn, store, on, "all", None, lambda f, m: None, lambda: False)
+    assert len(calls[1]) == len(LINES) - 2  # the two lines Haiku already placed are not sent again
+    assert second["lines_cut"] == 2
+
+
+def test_limit_messages_from_claude_are_recognised():
+    from handprinter.recognition.headless import _hit_limit
+
+    assert _hit_limit("Claude AI usage limit reached|1700000000") and _hit_limit("You've hit your limit · resets 5pm")
+    assert not _hit_limit("ok")
