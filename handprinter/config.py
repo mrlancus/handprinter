@@ -44,7 +44,7 @@ class Settings:
     password: str = ""
     recognition_model: str = "haiku"
     headless_recognition: bool = False
-    headless_concurrency: int = 4
+    headless_concurrency: int = 12
     adapter_env: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -88,7 +88,7 @@ def load_settings(env: dict[str, str] | None = None, dotenv: Path | None = None)
         # Online, you are usually away from the PC, so recognition can be started from the browser
         # unless explicitly turned off.
         headless_recognition=(merged.get("HANDPRINTER_HEADLESS_RECOGNITION") or ("1" if online else "0")) == "1",
-        headless_concurrency=max(1, min(8, int(merged.get("HANDPRINTER_HEADLESS_CONCURRENCY") or 4))),
+        headless_concurrency=max(1, min(12, int(merged.get("HANDPRINTER_HEADLESS_CONCURRENCY") or 12))),
         adapter_env={k: v for k, v in merged.items() if k.startswith(("HANDPRINTER_ERUKU_", "HANDPRINTER_DIFFUSIONPEN_"))},
     )
 

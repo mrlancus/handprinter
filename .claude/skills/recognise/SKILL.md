@@ -28,7 +28,7 @@ Run the `python -m handprinter ...` commands with the repository's virtual envir
 
 2. For each package, read `manifest.json` in its `path` and find the items that have no `results/<item_id>.json` yet.
 
-3. Dispatch the `handwriting-recogniser` subagent over those items in **chunks of at most 5 items**, running **up to 4 chunks at the same time** (send the Agent calls for up to 4 chunks in one message, wait, then send the next batch). Give each subagent the package directory and its exact item IDs.
+3. Dispatch the `handwriting-recogniser` subagent over those items in **chunks of at most 5 items**, running **up to 12 chunks at the same time** (send the Agent calls for up to 12 chunks in one message, wait, then send the next batch; if you hit a usage or rate limit, stop and tell the user what is left, running `/recognise` again later carries on). Give each subagent the package directory and its exact item IDs.
    - The subagent is pinned to `model: haiku`. Do not substitute a larger model.
    - If the subagent is unavailable in this session (for example, the file was added mid-session), say so. Then spawn a general agent with `model: haiku`, give it the contents of `.claude/agents/handwriting-recogniser.md` as its instructions, and report that you used this fallback.
    - After each batch, tell the user in one short line how far you are (e.g. "20 of 64 lines read").
