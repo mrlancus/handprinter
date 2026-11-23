@@ -109,3 +109,31 @@ def test_omit_on_all_pages_of_the_same_size(conn, store, fixture_source):
     assert pages.omit_on_same_size_pages(conn, a, bar, "other") == 1
     assert len(pages.omitted_areas(conn, b)) == 1 and len(pages.omitted_areas(conn, c)) == 0
     assert pages.omit_on_same_size_pages(conn, a, bar, "other") == 0  # already there: not added twice
+
+
+def test_page_overview_suggests_areas_to_leave_out_and_waits_for_you(conn, store, settings, fixture_source):
+    import json
+    from handprinter.recognition import importer, package
+    sid = fixture_source(variant=3)  # has a printed block
+    pages.run_detection(conn, store, sid)
+    info = package.build(conn, store, settings, [sid], include_overview=True, force=False)
+    entry = package.load_manifest(store, info["package_id"])["items"][0]
+    assert entry["context_type"] == "page_overview"
+    sx = entry["to_source"]["scale_x"]
+    result = {
+        "schema_version": "1", "item_id": entry["item_id"], "image_sha256": entry["image_sha256"], "model": "claude-haiku-test",
+        "region_type": "mixed", "transcription": None, "uncertain_spans": [], "marks": [], "quality_flags": [], "review_reasons": [],
+        "author_ambiguous": False,
+        "regions": [{"box": [800 / sx, 300 / sx, 250 / sx, 240 / sx], "region_type": "diagram"},
+                    {"box": [60 / sx, 20 / sx, 400 / sx, 60 / sx], "region_type": "printed_text"},
+                    {"box": [90 / sx, 120 / sx, 600 / sx, 50 / sx], "region_type": "handwriting"}],
+    }
+    (package.package_dir(store, info["package_id"]) / "results" / f"{entry['item_id']}.json").write_text(json.dumps(result), encoding="utf-8")
+    importer.import_package(conn, store, info["package_id"])
+    sugg = pages.analysis(conn, sid)["suggestions"]
+    assert sorted(s["reason"] for s in sugg) == ["diagram", "printed"]
+    assert pages.omitted_areas(conn, sid) == []  # nothing left out until you say so
+    diagram = next(s for s in sugg if s["reason"] == "diagram")
+    pages.accept_suggestion(conn, sid, diagram["id"])
+    pages.dismiss_suggestion(conn, sid, next(s for s in sugg if s["reason"] == "printed")["id"])
+    assert len(pages.omitted_areas(conn, sid)) == 1 and pages.analysis(conn, sid)["suggestions"] == []

@@ -13,7 +13,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from handprinter import review
+from handprinter import pages, review
 from handprinter.dataset import INLINE_MATH as MATH_SPAN
 from handprinter.db import dumps, new_id, now_iso, transaction
 from handprinter.geometry import Box, Homography
@@ -190,6 +190,12 @@ def _store_result(
         (proposal_id, region_id, entry["source_id"], manifest["job_id"], entry["item_id"], model, manifest["prompt_version"],
          manifest["schema_version"], entry["image_sha256"], region_revision, dumps(payload), 0, int(stale), now_iso()),
     )
+    if entry["context_type"] == "page_overview" and not stale and source is not None:
+        # diagrams and printed text it saw become one-tap omit suggestions (never applied by themselves)
+        src_parsed = pages.get_source(conn, entry["source_id"])
+        boxes = [(to_source.map_box(Box(*r["box"])).clamp(src_parsed["processed_w"], src_parsed["processed_h"]), r["region_type"])
+                 for r in result.get("regions") or []]
+        pages.suggest_omits(conn, src_parsed, [(b, t) for b, t in boxes if b.w >= 1 and b.h >= 1], proposal_id)
     if stale or not region_id or entry["context_type"] == "page_overview":
         return proposal_id, 0, False
 

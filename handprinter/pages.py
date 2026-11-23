@@ -101,7 +101,8 @@ def run_detection(conn: sqlite3.Connection, store: Store, source_id: str, replac
     with transaction(conn):
         machine_rows = conn.execute(
             """SELECT id FROM regions r WHERE source_id = ? AND deleted = 0 AND created_by IN ('detector', 'machine')
-               AND NOT EXISTS (SELECT 1 FROM region_revisions v WHERE v.region_id = r.id AND v.actor = 'human')""", (source_id,)
+               AND NOT EXISTS (SELECT 1 FROM region_revisions v WHERE v.region_id = r.id AND v.actor = 'human')
+               AND NOT EXISTS (SELECT 1 FROM json_each(r.flags) WHERE value = 'omit_suggestion')""", (source_id,)
         ).fetchall()
         has_detector = conn.execute(
             "SELECT 1 FROM regions WHERE source_id = ? AND deleted = 0 AND created_by = 'detector' LIMIT 1", (source_id,)).fetchone()
@@ -181,6 +182,58 @@ def omitted_areas(conn: sqlite3.Connection, source_id: str) -> list[sqlite3.Row]
 
 def omitted_boxes(conn: sqlite3.Connection, source_id: str) -> list[Box]:
     return [Box(r["x"], r["y"], r["w"], r["h"]) for r in omitted_areas(conn, source_id)]
+
+
+SUGGEST_FROM = {"diagram": "diagram", "printed_text": "printed"}  # recogniser region type -> omit reason
+
+
+def omit_suggestions(conn: sqlite3.Connection, source_id: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM regions WHERE source_id = ? AND deleted = 0 AND kind = 'block' AND status = 'needs_review' "
+        "AND EXISTS (SELECT 1 FROM json_each(flags) WHERE value = 'omit_suggestion') ORDER BY y, x", (source_id,)).fetchall()
+
+
+def suggest_omits(conn: sqlite3.Connection, source: dict[str, Any], boxes: list[tuple[Box, str]], proposal_id: str) -> int:
+    """Turn the page overview's diagrams and printed text into omit suggestions (never applied by themselves).
+
+    Skips areas already omitted or already suggested. Each suggestion waits for one tap: omit or dismiss.
+    """
+    existing = [Box(r["x"], r["y"], r["w"], r["h"]) for r in omitted_areas(conn, source["id"])]
+    existing += [Box(r["x"], r["y"], r["w"], r["h"]) for r in omit_suggestions(conn, source["id"])]
+    made = 0
+    for box, region_type in boxes:
+        reason = SUGGEST_FROM.get(region_type)
+        if reason is None or box.w * box.h < 0.002 * source["processed_w"] * source["processed_h"]:
+            continue
+        if any(box.intersection_area(e) > 0.5 * min(box.w * box.h, e.w * e.h) for e in existing):
+            continue
+        cls = "diagram" if reason == "diagram" else "printed_text"
+        review.create_region(conn, source, "block", box, actor="machine", cls=cls, status="needs_review", flags=["omit_suggestion"],
+                             action=f"suggest_omit:{proposal_id}", review_reason=reason)
+        existing.append(box)
+        made += 1
+    return made
+
+
+def accept_suggestion(conn: sqlite3.Connection, source_id: str, region_id: str) -> dict[str, Any]:
+    """Your tap on a suggestion: omit exactly that area, and retire the suggestion."""
+    region = review.get_region(conn, region_id)
+    if region["source_id"] != source_id or "omit_suggestion" not in region["flags"] or region["deleted"]:
+        raise review.ReviewError("not an open suggestion on this page")
+    source = get_source(conn, source_id)
+    out = omit_area(conn, source_id, Box(region["x"], region["y"], region["w"], region["h"]),
+                    region["review_reason"] if region["review_reason"] in OMIT_REASONS else "other", source["processing_rev"])
+    with transaction(conn):
+        review._write(conn, review.get_region(conn, region_id), {"deleted": 1}, "human", "suggestion_accepted")
+    return out
+
+
+def dismiss_suggestion(conn: sqlite3.Connection, source_id: str, region_id: str) -> None:
+    region = review.get_region(conn, region_id)
+    if region["source_id"] != source_id or "omit_suggestion" not in region["flags"]:
+        raise review.ReviewError("not a suggestion on this page")
+    with transaction(conn):
+        review._write(conn, region, {"deleted": 1}, "human", "suggestion_dismissed")
 
 
 def omit_on_same_size_pages(conn: sqlite3.Connection, source_id: str, box: Box, reason: str) -> int:
@@ -382,6 +435,8 @@ def analysis(conn: sqlite3.Connection, source_id: str) -> dict[str, Any]:
         "omitted_areas": [{"id": a["id"], "x": a["x"], "y": a["y"], "w": a["w"], "h": a["h"], "reason": a["review_reason"],
                            "label": OMIT_REASONS.get(a["review_reason"] or "", "Omitted")} for a in areas],
         "omit_reasons": OMIT_REASONS,
+        "suggestions": [{"id": r["id"], "x": r["x"], "y": r["y"], "w": r["w"], "h": r["h"], "reason": r["review_reason"],
+                         "label": OMIT_REASONS.get(r["review_reason"] or "", "Not handwriting")} for r in omit_suggestions(conn, source_id)],
     }
 
 

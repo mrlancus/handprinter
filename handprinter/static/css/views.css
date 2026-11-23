@@ -347,3 +347,6 @@
 .ck-zoom[hidden] { display: none; }
 .ck-zoom__img { height: 96px; width: auto; max-width: 100%; object-fit: contain; object-position: left; background: var(--c-workspace); border: 2px solid var(--c-region-selected); border-radius: var(--radius-sm); }
 .rg-dim { fill: rgba(20, 20, 18, 0.55); pointer-events: none; }
+.an-suggest__rect { fill: rgba(194, 124, 14, 0.12); stroke: var(--c-review-strong); stroke-width: 3px; stroke-dasharray: 10 6; vector-effect: non-scaling-stroke; pointer-events: none; }
+.an-suggest-box text { pointer-events: none; }
+.an-suggest h4 { color: var(--c-review); }

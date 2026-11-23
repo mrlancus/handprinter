@@ -268,6 +268,15 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             out["other_pages"] = pages.omit_on_same_size_pages(conn, source_id, box, body.reason)
         return out
 
+    @app.post("/api/sources/{source_id}/suggestions/{region_id}/accept")
+    def accept_suggestion(source_id: str, region_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return pages.accept_suggestion(conn, source_id, region_id)
+
+    @app.post("/api/sources/{source_id}/suggestions/{region_id}/dismiss")
+    def dismiss_suggestion(source_id: str, region_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        pages.dismiss_suggestion(conn, source_id, region_id)
+        return {"ok": True}
+
     @app.delete("/api/sources/{source_id}/omit/{area_id}")
     def restore_area(source_id: str, area_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         return pages.restore_area(conn, source_id, area_id)

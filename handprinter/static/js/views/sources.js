@@ -224,7 +224,7 @@ async function recognitionDialog(sourceIds, status) {
           h('tbody', {}, Object.entries(per).map(([sid, c]) => h('tr', {},
             h('td', {}, h('img', { class: 'thumb-xs', src: `/api/sources/${sid}/image?variant=thumb`, alt: '' }), h('span', { class: 'mono xs', text: sid })),
             h('td', { class: 'num', text: String(c.page) }), h('td', { class: 'num', text: String(c.line) }))))),
-        h('label', { class: 'check' }, overview, 'Include a downscaled page overview (helps classify printed text and marks)'),
+        h('label', { class: 'check' }, overview, 'Also look at each whole page and suggest areas to leave out (diagrams, printed text). One extra read per page.'),
         h('p', { class: 'xs muted', text: 'Already-recognised crops with the same image, model and prompt version are skipped (cache). Only open regions without human text are included.' }),
         h('div', { class: 'row' }, h('span', { class: 'spacer' }),
           h('button', { class: 'btn', type: 'button', onClick: () => dialog.close() }, 'Cancel'),
@@ -421,6 +421,13 @@ async function renderPage(root, sourceId) {
       if (!isRuling) box.addEventListener('click', () => { if (!omitMode) location.hash = `#/review?source=${sourceId}&region=${r.id}`; });
       nodes.push(box);
     }
+    if (analysis && analysis.suggestions) {
+      for (const sg of analysis.suggestions) {
+        nodes.push(svg('g', { class: 'an-suggest-box' },
+          svg('rect', { x: sg.x, y: sg.y, width: sg.w, height: sg.h, class: 'an-suggest__rect' }),
+          svg('text', { x: sg.x + label * 0.4, y: sg.y + label * 1.2, 'font-size': label, class: 'an-omit__label', text: `Suggested: ${sg.label}` })));
+      }
+    }
     if (layers.omitted && analysis) {
       for (const a of analysis.omitted_areas) {
         const g = svg('g', { class: 'an-omit', tabindex: 0, role: 'button', 'aria-label': `Omitted area: ${a.label}. Press Enter to restore it.` },
@@ -477,6 +484,18 @@ async function renderPage(root, sourceId) {
         h('span', { class: 'an-step__icon', 'aria-hidden': 'true' }, icon(/** @type {any} */ (stateIcon)[st.state] || 'info')),
         h('div', {}, h('strong', { text: st.label }), h('span', { class: 'sr-only', text: ` (${st.state === 'warn' ? 'check this' : st.state === 'todo' ? 'not yet' : 'ok'})` }),
           h('p', { class: 'xs muted', text: st.detail }))))),
+      a.suggestions && a.suggestions.length ? h('div', { class: 'stack an-suggest' },
+        h('h4', { text: `Suggested to leave out (${a.suggestions.length})` }),
+        h('p', { class: 'xs muted', text: 'The page overview thinks these are not your handwriting. Nothing is left out until you tap Omit.' }),
+        h('ul', { class: 'plain-list' }, a.suggestions.map((/** @type {any} */ sg) => h('li', { class: 'row row--between' },
+          h('span', { class: 'small', text: sg.label }),
+          h('span', { class: 'row' },
+            h('button', { class: 'btn btn--sm', type: 'button', onClick: () => decide(sg, 'accept') }, icon('x'), 'Omit'),
+            h('button', { class: 'btn btn--sm btn--quiet', type: 'button', onClick: () => decide(sg, 'dismiss') }, 'Dismiss'))))),
+        a.suggestions.length > 1 ? h('button', { class: 'btn btn--sm', type: 'button', onClick: async () => {
+          for (const sg of a.suggestions) await decide(sg, 'accept', true);
+          toast(`${a.suggestions.length} areas omitted.`); loadAnalysis();
+        } }, 'Omit all suggested') : null) : null,
       a.omitted_areas.length ? h('div', { class: 'stack' }, h('h4', { text: 'Omitted areas' }),
         h('ul', { class: 'plain-list' }, a.omitted_areas.map((/** @type {any} */ o) => h('li', { class: 'row row--between' },
           h('span', { class: 'small', text: o.label }),
@@ -519,6 +538,14 @@ async function renderPage(root, sourceId) {
     document.body.appendChild(dialog);
     dialog.addEventListener('close', () => { dialog.remove(); if (!done) onCancel(); });
     dialog.showModal();
+  }
+
+  /** @param {any} sg @param {'accept'|'dismiss'} what @param {boolean} [quiet] */
+  async function decide(sg, what, quiet = false) {
+    try {
+      await api(`/api/sources/${sourceId}/suggestions/${sg.id}/${what}`, { method: 'POST' });
+      if (!quiet) { toast(what === 'accept' ? `${sg.label}: left out.` : 'Suggestion dismissed.'); loadAnalysis(); }
+    } catch (err) { toast(err instanceof Error ? err.message : String(err), 'error'); }
   }
 
   /** @param {any} area */
