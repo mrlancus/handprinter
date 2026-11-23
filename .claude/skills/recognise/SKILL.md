@@ -18,7 +18,13 @@ Run the `python -m handprinter ...` commands with the repository's virtual envir
    python -m handprinter recognition pending --json
    ```
 
-   If `$ARGUMENTS` names a package ID, process only that one. If nothing is pending, say so and stop.
+   If `$ARGUMENTS` names a package ID, process only that one.
+
+   If nothing is pending, do not just say so. Run `python -m handprinter recognition status` and tell the user, in plain words:
+   - which data folder you looked in (they can compare it with Settings in the app);
+   - the latest packages and what happened to each: already read and imported (for example by "Run headless" in the app), built with 0 items (everything was already read or approved), or read but not imported (then run `python -m handprinter recognition import <id>` and report it as in step 7);
+   - if there are no packages at all, or the newest is older than they expect, that the app may be using a different data folder or the package build failed (Sources → Recognition packages shows it).
+   Then stop.
 
 2. For each package, read `manifest.json` in its `path` and find the items that have no `results/<item_id>.json` yet.
 

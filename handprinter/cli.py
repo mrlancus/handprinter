@@ -89,6 +89,23 @@ def cmd_recognition(settings: Settings, args: argparse.Namespace) -> int:
     store = Store(settings)
     conn = connect(settings.db_path)
     init_db(conn)
+    if args.action == "status":
+        rows = conn.execute(
+            """SELECT p.id, p.created_at, p.status, p.item_count,
+                      SUM(i.status = 'pending') AS pending, SUM(i.status = 'failed') AS failed, SUM(i.status = 'succeeded') AS imported
+               FROM recognition_packages p LEFT JOIN recognition_items i ON i.package_id = p.id
+               GROUP BY p.id ORDER BY p.created_at DESC LIMIT 5""").fetchall()
+        recent = []
+        for r in rows:
+            item = dict(r)
+            item["read_not_imported"] = package.results_waiting(store, conn, r["id"])
+            recent.append(item)
+        out = {"data_dir": str(settings.data_dir), "database": str(settings.db_path), "recent_packages": recent}
+        lines = [f"data folder: {out['data_dir']}"] + [
+            f"{r['id']}  {r['created_at'][:16]}  items {r['item_count']}  pending {r['pending'] or 0}  imported {r['imported'] or 0}"
+            f"  failed {r['failed'] or 0}  read-not-imported {r['read_not_imported']}" for r in recent]
+        print(json.dumps(out, indent=2) if args.json else "\n".join(lines if recent else lines + ["no recognition packages yet"]))
+        return 0
     if args.action == "pending":
         rows = package.pending_packages(conn)
         out = [{**r, "path": str(package.package_dir(store, r["id"]))} for r in rows]
@@ -158,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     doc = sub.add_parser("doctor", help="report OS, Python, GPU, decoders, Claude CLI and adapters")
     doc.add_argument("--json", action="store_true")
     rec = sub.add_parser("recognition", help="recognition package helpers for Claude Code")
-    rec.add_argument("action", choices=["pending", "validate", "import", "show"])
+    rec.add_argument("action", choices=["pending", "status", "validate", "import", "show"])
     rec.add_argument("package_id", nargs="?")
     rec.add_argument("--json", action="store_true")
     bak = sub.add_parser("backup", help="copy the database and data files to a folder")
