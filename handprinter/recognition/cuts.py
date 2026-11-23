@@ -138,10 +138,17 @@ def plan_lines(conn: sqlite3.Connection, scope: str, source_ids: list[str] | Non
         words = [w for w in review._line_words(conn, line["id"]) if w["status"] != "excluded"]
         if len(tokenize(line["text"] or "")) < 2 or not all(_untouched(conn, w) for w in words):
             continue
+        if words and all(_cut_by_haiku(conn, w) for w in words):
+            continue  # already placed by Haiku: not sent again
         if scope == "amber" and "alignment_ambiguous" not in line["flags"] and not any("alignment_ambiguous" in w["flags"] for w in words):
             continue
         out.append(line)
     return out
+
+
+def _cut_by_haiku(conn: sqlite3.Connection, w: dict[str, Any]) -> bool:
+    first = conn.execute("SELECT action FROM region_revisions WHERE region_id = ? ORDER BY revision LIMIT 1", (w["id"],)).fetchone()
+    return bool(first and str(first["action"]).startswith("word_cuts:"))
 
 
 def _untouched(conn: sqlite3.Connection, w: dict[str, Any]) -> bool:
@@ -349,13 +356,19 @@ def cut_task(job_dir: Path, item_ids: list[str]) -> str:
     )
 
 
+def answered_count(store: Store, package_id: str) -> int:
+    return sum(1 for _ in (package_dir(store, package_id) / "results").glob("*.json"))
+
+
 def run_headless(store: Store, settings: Any, package_id: str, progress: Callable[[float, str], None],
                  cancelled: Callable[[], bool]) -> dict[str, Any]:
     from handprinter.recognition import headless
 
     root = package_dir(store, package_id)
     todo = [it["item_id"] for it in load_manifest(store, package_id)["items"] if not (root / "results" / f"{it['item_id']}.json").is_file()]
-    run = headless.run_items(settings, root, todo, AGENT_NAME, cut_task, progress, cancelled)
+    run = headless.run_items(settings, root, todo, AGENT_NAME, cut_task, progress, cancelled, lambda: answered_count(store, package_id))
+    if run.get("usage_limit") or cancelled():
+        return run
     # a result that does not fit (wrong count, numbers out of order) is asked for once more
     bad = [i for i, errs in validate(store, package_id).items() if errs != ["no result yet"]]
     for i in bad:
@@ -367,13 +380,36 @@ def run_headless(store: Store, settings: Any, package_id: str, progress: Callabl
 
 def haiku_cuts(conn: sqlite3.Connection, store: Store, settings: Any, scope: str, source_ids: list[str] | None,
                progress: Callable[[float, str], None], cancelled: Callable[[], bool]) -> dict[str, Any]:
-    """The whole round: build the images, let Haiku choose (headless), cut the boxes."""
-    built = build(conn, store, scope, source_ids, lambda f, m: progress(0.1 * f, m))
+    """The whole round: build the images, let Haiku choose (headless), cut the boxes.
+
+    Answers already given in an earlier, unfinished round (cancelled, or stopped by a usage limit) are
+    used first and those lines are not sent again; whatever Haiku answers is applied even if the round
+    is cancelled or stops early.
+    """
+    earlier = {"lines_cut": 0, "unsure": 0}
+    for pkg in pending(store):
+        if pkg["items"] - pkg["unanswered"] > 0:
+            got = apply(conn, store, pkg["id"])
+            earlier["lines_cut"] += got["lines_cut"]
+            earlier["unsure"] += got["unsure"]
+        else:
+            (package_dir(store, pkg["id"]) / "applied.json").write_text('{"note": "superseded"}', encoding="utf-8")
+    built = build(conn, store, scope, source_ids, lambda f, m: progress(0.05 * f, m))
     if not built["items"]:
-        return {"lines": 0, "note": "no open lines with untouched word boxes" + (" flagged amber" if scope == "amber" else "")}
+        note = "no open lines with untouched word boxes" + (" flagged amber" if scope == "amber" else "")
+        return {"lines": 0, "lines_cut": earlier["lines_cut"], "unsure": earlier["unsure"], "failed": [], "note": note}
     if not settings.headless_recognition:
         return {"lines": built["items"], "package_id": built["package_id"], "waiting": True,
                 "note": "run /recognise in Claude Code on the PC: it answers word-cut packages too, then imports them"}
-    run_headless(store, settings, built["package_id"], lambda f, m: progress(0.1 + 0.85 * f, m), cancelled)
-    applied = apply(conn, store, built["package_id"])
-    return {"lines": built["items"], "package_id": built["package_id"], **applied}
+    run: dict[str, Any] = {}
+    try:
+        run = run_headless(store, settings, built["package_id"], lambda f, m: progress(0.05 + 0.9 * f, m), cancelled)
+    finally:
+        applied = apply(conn, store, built["package_id"])  # whatever was answered, even if stopped early
+    out = {"lines": built["items"], "package_id": built["package_id"], **applied}
+    out["lines_cut"] += earlier["lines_cut"]
+    out["unsure"] += earlier["unsure"]
+    if run.get("usage_limit"):
+        out["note"] = (f"your Claude usage limit was reached after {applied['lines_cut']} line(s); the rest were not sent. "
+                       "Press the button again after the limit resets to carry on")
+    return out

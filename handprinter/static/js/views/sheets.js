@@ -234,7 +234,7 @@ export function haikuCuts(sourceIds) {
   const status = h('p', { class: 'small', 'aria-live': 'polite' });
   const btn = h('button', { class: 'btn btn--primary', type: 'button', onClick: async () => {
     btn.setAttribute('disabled', '');
-    status.textContent = 'Haiku is looking at the lines… (about a minute per 10 lines; you can keep working)';
+    status.textContent = 'Haiku is looking at the lines… progress shows in Background jobs (a few minutes for a hundred lines; you can keep working). It uses your Claude plan: start with amber lines if your usage is tight.';
     try {
       const { job_id } = await api('/api/word-cuts', { body: { scope: scope.value, source_ids: sourceIds } });
       const job = await trackJob(job_id);
@@ -242,8 +242,8 @@ export function haikuCuts(sourceIds) {
       const r = job.result;
       status.textContent = r.waiting
         ? `${r.lines} line(s) are ready for Haiku. ${r.note}.`
-        : r.lines === 0 ? `Nothing to do: ${r.note}.`
-          : `Done: ${r.lines_cut} of ${r.lines} line(s) cut where Haiku chose${r.unsure ? `; ${r.unsure} it was unsure of stay amber` : ''}${r.failed.length ? `; ${r.failed.length} could not be used` : ''}. Check them in Check.`;
+        : r.lines === 0 ? `Nothing new to send: ${r.note}.${r.lines_cut ? ` ${r.lines_cut} line(s) from the earlier round were cut.` : ''}`
+          : `Done: ${r.lines_cut} line(s) cut where Haiku chose${r.unsure ? `; ${r.unsure} it was unsure of stay amber` : ''}${r.failed.length ? `; ${r.failed.length} could not be used` : ''}.${r.note ? ` Note: ${r.note}.` : ''} Check them in Check.`;
     } catch (err) { status.textContent = ''; toast(err instanceof Error ? err.message : String(err), 'error'); }
     btn.removeAttribute('disabled');
   } }, icon('review'), 'Ask Haiku to place word boxes');
