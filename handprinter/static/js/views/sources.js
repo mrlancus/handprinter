@@ -125,13 +125,15 @@ function importPanel(status, onImported) {
   const session = h('input', { type: 'text', placeholder: 'e.g. 2026-11 notebook', maxlength: 80 });
   const date = h('input', { type: 'date' });
   const era = selectEl(['current', 'older'], 'current', () => {}, { current: 'Current style', older: 'Older style' });
+  const pdfPages = /** @type {HTMLInputElement} */ (h('input', { type: 'text', inputmode: 'numeric', placeholder: 'all, or e.g. 1-7, 9', maxlength: 200 }));
+  const sheetStart = /** @type {HTMLInputElement} */ (h('input', { type: 'number', inputmode: 'numeric', min: '1', placeholder: 'e.g. 1001' }));
   const drop = h('label', { class: 'dropzone', for: 'file-input',
     onDragover: (/** @type {DragEvent} */ e) => { e.preventDefault(); drop.classList.add('is-over'); },
     onDragleave: () => drop.classList.remove('is-over'),
     onDrop: (/** @type {DragEvent} */ e) => { e.preventDefault(); drop.classList.remove('is-over'); start(e.dataTransfer?.files || null); } },
     icon('upload', { class: 'dropzone__icon' }),
     h('strong', { text: 'Drop photos, scans or ZIP archives' }),
-    h('span', { class: 'small muted', text: 'JPEG, PNG, WebP and ZIP. Or click to choose files.' }),
+    h('span', { class: 'small muted', text: 'JPEG, PNG, WebP, PDF and ZIP. Or click to choose files.' }),
     fileInput);
   const extras = [];
   if (!status.decoders.heic) extras.push('HEIC needs the optional decoder (pip install -e ".[heic]")');
@@ -141,11 +143,16 @@ function importPanel(status, onImported) {
   async function start(files) {
     if (!files || !files.length) return;
     const type = /** @type {HTMLInputElement} */ (sourceType.querySelector('input:checked')).value;
+    const pagesSpec = pdfPages.value.trim();
+    if (pagesSpec && !/^\s*\d+(\s*-\s*\d+)?(\s*,\s*\d+(\s*-\s*\d+)?)*\s*,?\s*$/.test(pagesSpec)) {
+      toast('PDF pages: use numbers and ranges, e.g. 1-7, 9', 'error'); return;
+    }
     let batch;
     try {
       batch = await api('/api/batches', { body: {
         source_type: type, session: session.value.trim() || null, captured_date: date.value || null,
         style_era: /** @type {HTMLSelectElement} */ (era).value,
+        pages: pagesSpec || null, sheet_start: sheetStart.value ? Number(sheetStart.value) : null,
       } });
     } catch (err) { toast(String(err instanceof Error ? err.message : err), 'error'); return; }
     for (const file of Array.from(files)) {
@@ -165,6 +172,11 @@ function importPanel(status, onImported) {
           const ok = entries.filter((/** @type {any} */ e) => e.status === 'imported').length;
           state.textContent = `${ok} of ${entries.length} imported`;
           state.className = ok === entries.length ? 'xs badge badge--ok' : 'xs badge badge--review';
+          const sheetRes = job.result.sheets || [];
+          if (sheetRes.length && sheetRes[0].sheet_number !== undefined) {
+            const bad = sheetRes.filter((/** @type {any} */ r) => r.error);
+            toast(`Filled in ${sheetRes.length - bad.length} page(s) from sheets ${sheetRes.find((/** @type {any} */ r) => !r.error)?.sheet_number ?? ''} onward${bad.length ? `; ${bad.map((/** @type {any} */ r) => r.error).join(', ')}` : ''}. Check them in Check.`, bad.length ? 'error' : 'info');
+          }
           mount(detail, entries.map((/** @type {any} */ e) =>
             h('li', {}, h('span', { class: `badge${e.status === 'rejected' ? ' badge--error' : e.status === 'imported' ? (e.detail ? ' badge--review' : ' badge--ok') : ''}`, text: e.status }), ' ', h('span', { class: 'mono xs', text: e.name }),
               e.detail ? h('span', { class: 'xs muted', text: ` — ${e.detail}` }) : null,
@@ -190,6 +202,10 @@ function importPanel(status, onImported) {
         h('div', { class: 'row import__pair' },
           h('label', { class: 'field' }, h('span', { text: 'Date (optional)' }), date),
           h('label', { class: 'field' }, h('span', { text: 'Style' }), era)),
+        h('div', { class: 'row import__pair' },
+          h('label', { class: 'field' }, h('span', { text: 'PDF pages (optional)' }), pdfPages),
+          h('label', { class: 'field' }, h('span', { text: 'First page is sheet' }), sheetStart)),
+        h('p', { class: 'xs muted', text: 'Writing sheets in a PDF (e.g. GoodNotes): pick the pages and give the sheet number of the first one; the next pages are the next sheets in order. Leave empty for ordinary notes.' }),
         extras.length ? h('p', { class: 'xs muted', text: extras.join(' · ') }) : null)),
     list);
 }

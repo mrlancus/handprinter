@@ -175,6 +175,13 @@ def build_pack(seed: int = 20261123) -> list[dict[str, Any]]:
     return out
 
 
+def sheet_by_number(conn: sqlite3.Connection, number: int) -> str | None:
+    if number > PACK_BASE:
+        ensure_pack(conn)
+    row = conn.execute("SELECT id FROM sheets WHERE number = ? ORDER BY created_at LIMIT 1", (number,)).fetchone()
+    return row["id"] if row else None
+
+
 def make_sheet(conn: sqlite3.Connection, focus: str = "mixed", seed: int | None = None) -> dict[str, Any]:
     if focus not in FOCUSES:
         raise review.ReviewError(f"unknown sheet focus {focus!r}")
@@ -231,6 +238,18 @@ def list_sheets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 SKIP_LINE = 1.6   # a written line that is not on the sheet (a note, a crossed-out attempt)
 SKIP_PROMPT = 1.2  # a sheet line you did not write
+SKIP_REST = 0.8    # sheet lines after your last written line: you simply stopped there (common)
+MAX_PAIR = 1.0     # below SKIP_LINE + SKIP_REST (and SKIP_LINE + SKIP_PROMPT): writing the lines in order is the first guess
+
+
+def _maths_len(src: str) -> int:
+    """Roughly how many characters wide LaTeX is when written by hand (a fraction is as wide as its longer part)."""
+    frac = re.compile(r"\\frac\{([^{}]*)\}\{([^{}]*)\}")
+    while frac.search(src):
+        src = frac.sub(lambda mm: "x" * (max(len(mm.group(1)), len(mm.group(2))) + 1), src)
+    src = re.sub(r"\\(left|right|mathbf|mathrm|text|operatorname|vec|[,;!]|quad)", "", src)
+    src = re.sub(r"\\[a-zA-Z]+", "x", src)
+    return max(1, len(re.sub(r"[{}\s^_]", "", src)))
 
 
 def match_lines(widths: list[float], texts: list[str], word_widths: list[list[float]] | None = None) -> list[tuple[int | None, int | None]]:
@@ -242,8 +261,18 @@ def match_lines(widths: list[float], texts: list[str], word_widths: list[list[fl
     Returns (written index or None, sheet index or None) in order.
     """
     m, n = len(widths), len(texts)
-    chars = [max(1, len(re.sub(r"\$[^$]*\$", "xxxx", t))) for t in texts]
+    chars = [max(1, len(re.sub(r"\$([^$]*)\$", lambda mm: "x" * _maths_len(mm.group(1)), t))) for t in texts]
     per_char = float(np.median([w / c for w, c in zip(widths, chars)])) if m and n else 1.0
+    # Rhythm (word widths against word lengths) is scored relative to the best sheet line for each written
+    # line: when word gaps are found poorly, every pairing fits badly by about the same amount, and that
+    # shared misfit must not make skipping look cheaper than pairing.
+    rhythm = [[0.0] * n for _ in range(m)]
+    if word_widths:
+        for i in range(m):
+            if word_widths[i]:
+                row = [min(2.0, align(texts[j], word_widths[i]).cost / max(1, len(tokenize(texts[j])))) for j in range(n)]
+                low = min(row) if row else 0.0
+                rhythm[i] = [r - low for r in row]
     pairs: list[tuple[int | None, int | None]] = []
     for _ in range(2):  # estimate, then re-estimate from the pairs found
         inf = float("inf")
@@ -257,15 +286,12 @@ def match_lines(widths: list[float], texts: list[str], word_widths: list[list[fl
                     continue
                 moves = []
                 if i < m and j < n:
-                    c = abs(math.log(max(widths[i], 1) / (chars[j] * per_char)))
-                    if word_widths and word_widths[i]:
-                        fit = align(texts[j], word_widths[i])
-                        c += min(2.0, fit.cost / max(1, len(tokenize(texts[j]))))
-                    moves.append((i + 1, j + 1, "pair", c))
+                    c = abs(math.log(max(widths[i], 1) / (chars[j] * per_char))) + rhythm[i][j]
+                    moves.append((i + 1, j + 1, "pair", min(c, MAX_PAIR)))
                 if i < m:
                     moves.append((i + 1, j, "skip_line", SKIP_LINE))
                 if j < n:
-                    moves.append((i, j + 1, "skip_prompt", SKIP_PROMPT))
+                    moves.append((i, j + 1, "skip_prompt", SKIP_REST if i == m else SKIP_PROMPT))
                 for ni, nj, move, c in moves:
                     if c0 + c < cost[ni][nj]:
                         cost[ni][nj], back[ni][nj] = c0 + c, (i, j, move)

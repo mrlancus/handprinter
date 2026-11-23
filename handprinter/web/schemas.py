@@ -21,6 +21,8 @@ class BatchIn(BaseModel):
     note: str | None = Field(default=None, max_length=300)
     detect: bool = True
     sheet_id: str | None = Field(default=None, pattern=r"^sht_[0-9a-f]{16}$")  # this upload is a written-out writing sheet
+    pages: str | None = Field(default=None, max_length=200, pattern=r"^[\d\s,-]*$")  # PDF pages to import, e.g. "1-7, 9"
+    sheet_start: int | None = Field(default=None, ge=1, le=99999)  # first chosen page is this sheet number, the rest follow
 
 
 class SheetIn(BaseModel):

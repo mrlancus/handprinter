@@ -49,11 +49,12 @@ class Job:
 def _import_upload(job: Job) -> Any:
     p = job.params
     staged = job.store.staging(p["staged_id"])
-    batch = ingest.BatchInfo(p["batch_id"], p["source_type"], p.get("session"), p.get("captured_date"), p.get("style_era", "current"))
+    wanted = ingest.parse_pages(p.get("pages"))
+    batch = ingest.BatchInfo(p["batch_id"], p["source_type"], p.get("session"), p.get("captured_date"), p.get("style_era", "current"), wanted)
     results = ingest.import_upload(job.conn, job.store, staged, p["filename"], batch, job.progress)
     staged.unlink(missing_ok=True)
     out = [r.as_dict() for r in results]
-    if p.get("detect", True) or p.get("sheet_id"):
+    if p.get("detect", True) or p.get("sheet_id") or p.get("sheet_start"):
         for sid in {sid for r in results for sid in r.source_ids}:
             if pages.get_source(job.conn, sid)["detection_status"] == "none":
                 pages.run_detection(job.conn, job.store, sid)
@@ -61,6 +62,16 @@ def _import_upload(job: Job) -> Any:
     if p.get("sheet_id"):  # a written-out writing sheet: label it from the sheet, no recognition needed
         for sid in sorted({sid for r in results for sid in r.source_ids}):
             sheet_results.append(sheets.apply_sheet(job.conn, job.store, sid, p["sheet_id"]))
+    elif p.get("sheet_start"):  # pages in sheet order: the first chosen page is sheet N, the next N+1, ...
+        order = sorted(wanted) if wanted is not None else None
+        imported = {sid: pages.get_source(job.conn, sid)["page_index"] for r in results if r.status == "imported" for sid in r.source_ids}
+        for sid, index in sorted(imported.items(), key=lambda kv: kv[1]):
+            number = p["sheet_start"] + (order.index(index) if order is not None else index)
+            sheet_id = sheets.sheet_by_number(job.conn, number)
+            if sheet_id is None:
+                sheet_results.append({"source_id": sid, "error": f"there is no sheet {number}"})
+                continue
+            sheet_results.append({**sheets.apply_sheet(job.conn, job.store, sid, sheet_id), "sheet_number": number})
     return {"entries": out, "sheets": sheet_results}
 
 

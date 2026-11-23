@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
-from handprinter import dataset, doctor, evaluation, imaging, jobs, pages, review, sheets, studio
+from handprinter import dataset, doctor, evaluation, imaging, ingest, jobs, pages, review, sheets, studio
 from handprinter.adapters import all_adapters
 from handprinter.config import MAX_UPLOAD_BYTES, ONLINE_MAX_UPLOAD_BYTES, Settings
 from handprinter.db import connect, dumps, init_db, new_id, now_iso, row_dict, transaction
@@ -126,6 +126,12 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     # ---------- import ----------
     @app.post("/api/batches")
     def create_batch(body: S.BatchIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        try:
+            ingest.parse_pages(body.pages)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if body.sheet_start is not None and sheets.sheet_by_number(conn, body.sheet_start) is None:
+            raise HTTPException(422, f"there is no writing sheet {body.sheet_start}")
         batch_id = new_id("bat")
         conn.execute("INSERT INTO batches (id, created_at, note, source_type, session, results) VALUES (?,?,?,?,?,?)",
                      (batch_id, now_iso(), body.note, body.source_type, body.session, dumps(body.model_dump())))
@@ -156,6 +162,7 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
                 "staged_id": staged_id, "filename": name, "batch_id": batch_id, "source_type": batch["source_type"],
                 "session": batch["session"], "captured_date": opts.get("captured_date"), "style_era": opts.get("style_era", "current"),
                 "detect": opts.get("detect", True), "sheet_id": opts.get("sheet_id"),
+                "pages": opts.get("pages"), "sheet_start": opts.get("sheet_start"),
             })
             return {"filename": name, "status": "queued", "job_id": job_id, "bytes": size}
         finally:
