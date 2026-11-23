@@ -29,6 +29,8 @@ Nothing has been verified with your real handwriting.
 | Dataset export (PNG crops, JSONL, immutable snapshots, canonical grouped split, unseen words) | fixtures | `tests/test_dataset.py`. |
 | Recognition package → `/recognise` → validate → import | fixtures and **live** | Fixture results cover the malformed, partial, hash-mismatch, tampered and stale cases. The live run is described in the next section. |
 | Headless `claude -p` automation | implemented, not run | Off by default. The flags were checked against `claude --help`; no headless chunk was executed here. |
+| Writing sheets: fill in from the sheet, re-cut all pages | fixtures; checked on 5 of your pages rebuilt from screenshots | Lines are matched by how their ink cuts into each sheet line's words (finds a skipped line); detection pieces are joined into rows. `tests/test_sheets.py`. |
+| Word boxes by Haiku (numbered gaps) | fixtures; **live with a Haiku subagent** on your sheet 1004 rebuilt from a screenshot | The app numbers every gap in a line's ink; the `word-cutter` subagent (Haiku) picks the gaps between words; the app cuts exactly there. 11 of 11 lines right, 1 marked unsure. Headless from the app in online mode, else via `/recognise`. `tests/test_word_cuts.py`. |
 | Durable jobs, cancel, retry, restart recovery | fixtures | `tests/test_jobs.py`. |
 | Security: loopback, Host/Origin checks, request token, LAN sign-in | fixtures | `tests/test_api_e2e.py`. |
 | Studio: assets, canvas layout in mm, flow, undo/redo, save/open, PNG export at a set dpi | fixtures | The export size check is 100×50 mm at 254 dpi = 1000×500 px. |

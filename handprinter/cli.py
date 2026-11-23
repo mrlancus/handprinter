@@ -144,6 +144,38 @@ def cmd_recognition(settings: Settings, args: argparse.Namespace) -> int:
     return 2
 
 
+def cmd_cuts(settings: Settings, args: argparse.Namespace) -> int:
+    """Word-cut packages (Haiku picks the gaps between words): list, check and apply."""
+    from handprinter.db import connect, init_db
+    from handprinter.recognition import cuts
+    from handprinter.storage import Store
+
+    store = Store(settings)
+    conn = connect(settings.db_path)
+    init_db(conn)
+    if args.action == "pending":
+        rows = cuts.pending(store)
+        print(json.dumps(rows, indent=2) if args.json else "\n".join(
+            f"{r['id']}  items {r['items']}  unanswered {r['unanswered']}  {r['path']}" for r in rows) or "No pending word-cut packages.")
+        return 0
+    if not args.package_id:
+        print("package id required", file=sys.stderr)
+        return 2
+    if args.action == "validate":
+        bad = cuts.validate(store, args.package_id)
+        if args.json:
+            print(json.dumps({"failed": bad}, indent=2))
+        else:
+            print(f"{len(cuts.load_manifest(store, args.package_id)['items']) - len(bad)} valid, {len(bad)} invalid or missing")
+            for item_id, errors in bad.items():
+                print(f"  {item_id}: {'; '.join(errors)}")
+        return 0 if not bad else 1
+    if args.action == "import":
+        print(json.dumps(cuts.apply(conn, store, args.package_id), indent=2))
+        return 0
+    return 2
+
+
 def cmd_backup(settings: Settings, dest: Path) -> int:
     """Consistent copy: SQLite online backup plus every file in the data directory."""
     dest = dest.expanduser().resolve()
@@ -191,6 +223,10 @@ def main(argv: list[str] | None = None) -> int:
     rec.add_argument("action", choices=["pending", "status", "validate", "import", "show"])
     rec.add_argument("package_id", nargs="?")
     rec.add_argument("--json", action="store_true")
+    cut = sub.add_parser("cuts", help="word-cut packages for Claude Code (Haiku picks the gaps between words)")
+    cut.add_argument("action", choices=["pending", "validate", "import"])
+    cut.add_argument("package_id", nargs="?")
+    cut.add_argument("--json", action="store_true")
     bak = sub.add_parser("backup", help="copy the database and data files to a folder")
     bak.add_argument("dest", type=Path)
     args = parser.parse_args(argv)
@@ -220,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "recognition":
         return cmd_recognition(settings, args)
+    if args.command == "cuts":
+        return cmd_cuts(settings, args)
     if args.command == "backup":
         return cmd_backup(settings, args.dest)
     return 2

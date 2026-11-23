@@ -79,6 +79,12 @@ def _apply_sheet(job: Job) -> Any:
     return sheets.apply_sheet(job.conn, job.store, job.params["source_id"], job.params["sheet_id"])
 
 
+def _haiku_cuts(job: Job) -> Any:
+    from handprinter.recognition import cuts
+    p = job.params
+    return cuts.haiku_cuts(job.conn, job.store, job.settings, p.get("scope", "amber"), p.get("source_ids"), job.progress, job.cancelled)
+
+
 def _refill_sheets(job: Job) -> Any:
     return sheets.refill_all(job.conn, job.store, job.progress)
 
@@ -164,6 +170,7 @@ HANDLERS: dict[str, Handler] = {
     "recut_line": _recut_line,
     "apply_sheet": _apply_sheet,
     "refill_sheets": _refill_sheets,
+    "haiku_cuts": _haiku_cuts,
     "adapter_preflight": _adapter_preflight,
     "adapter_download": _adapter_download,
     "adapter_infer": _adapter_infer,

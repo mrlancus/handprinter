@@ -5,7 +5,7 @@ import { icon } from '../components/icons.js';
 import { callout, emptyState, errorState, flagBadge, loadingState, setupState } from '../components/states.js';
 import { jobLabel, trackJob } from '../jobs.js';
 import { toast } from '../app.js';
-import { sheetPicker, sheetsTab } from './sheets.js';
+import { haikuCuts, sheetPicker, sheetsTab } from './sheets.js';
 
 const PAGE_SIZE = 48;
 
@@ -645,6 +645,8 @@ async function renderPage(root, sourceId) {
       h('aside', { class: 'stack' },
         h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'What the app did with this page' })),
           h('div', { class: 'panel__body' }, summary)),
+        h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'Word boxes by Haiku' })),
+          h('div', { class: 'panel__body' }, haikuCuts([sourceId]))),
         h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h3', { text: 'Photographic correction' })),
           h('div', { class: 'panel__body stack' },
             h('p', { class: 'xs muted', text: 'Corrects the camera only. Slant, spacing and baseline drift in the writing are never changed.' }),
