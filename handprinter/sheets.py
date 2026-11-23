@@ -242,14 +242,7 @@ SKIP_REST = 0.8    # sheet lines after your last written line: you simply stoppe
 MAX_PAIR = 1.0     # below SKIP_LINE + SKIP_REST (and SKIP_LINE + SKIP_PROMPT): writing the lines in order is the first guess
 
 
-def _maths_len(src: str) -> int:
-    """Roughly how many characters wide LaTeX is when written by hand (a fraction is as wide as its longer part)."""
-    frac = re.compile(r"\\frac\{([^{}]*)\}\{([^{}]*)\}")
-    while frac.search(src):
-        src = frac.sub(lambda mm: "x" * (max(len(mm.group(1)), len(mm.group(2))) + 1), src)
-    src = re.sub(r"\\(left|right|mathbf|mathrm|text|operatorname|vec|[,;!]|quad)", "", src)
-    src = re.sub(r"\\[a-zA-Z]+", "x", src)
-    return max(1, len(re.sub(r"[{}\s^_]", "", src)))
+_maths_len = refit.maths_len
 
 
 def match_lines(widths: list[float], texts: list[str], word_widths: list[list[float]] | None = None) -> list[tuple[int | None, int | None]]:
@@ -402,19 +395,21 @@ def _join_rows(conn: sqlite3.Connection, ink: refit.LineInk, source: dict[str, A
             rows_.append([i])
         else:
             home.append(i)
-    # Short pieces: the end of a row (letter bodies at its height), or a tail or dot of the nearest row's letters.
+    # Short pieces (the end of a row, a tail, a dot, the bottom of a fraction): the row whose letters are
+    # nearest in height, if that is closer than half the spacing between rows (else it is a line of its own).
+    centres = sorted(sum((j["b0"] + j["b1"]) / 2 for j in r) / len(r) for r in rows_)
+    steps = [b - a for a, b in zip(centres, centres[1:]) if b - a > body]
+    pitch = float(np.median(steps)) if steps else 4.0 * body
     for i in small:
-        best, dist = None, 2.0 * body
+        best, dist = None, 0.6 * pitch
+        mid = (i["y0"] + i["y1"]) / 2
         for r in rows_:
             if not all(j["ok"] for j in r):
                 continue
-            b0, b1 = min(j["b0"] for j in r), max(j["b1"] for j in r)
             x0, x1 = min(j["x0"] for j in r), max(j["x1"] for j in r)
             if i["x1"] < x0 - 6 * body or i["x0"] > x1 + 6 * body:
                 continue
-            d = max(0.0, b0 - i["y1"], i["y0"] - b1)
-            if (i["b0"] + i["b1"]) / 2 > b1 + 1.5 * body and i["y0"] > b1 + 0.8 * body:
-                continue  # its own letters sit well below: not a tail of this row
+            d = abs(mid - sum((j["b0"] + j["b1"]) / 2 for j in r) / len(r))
             if d < dist:
                 best, dist = r, d
         if best is None:

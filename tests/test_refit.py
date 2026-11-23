@@ -289,3 +289,37 @@ def test_a_dot_inside_a_word_does_not_cut_the_word_short():
 
     # pieces sorted by left edge: a long word, then the dot of an i inside it, then the next word
     assert detect._merge_runs([(0, 100), (40, 45), (120, 130)], max_gap=5) == [(0, 100), (120, 130)]
+
+
+def test_maths_is_measured_as_written_not_as_latex():
+    from handprinter.recognition.refit import is_spaced, written_len
+
+    assert written_len("$\\alpha$,") == 2           # α and the comma, not nine LaTeX characters
+    assert written_len("$H^+$") == 1.5              # a power is written small
+    assert written_len("$\\lambda = \\frac{h}{mv}$") == 6  # λ, a spaced =, a fraction as wide as "mv"
+    assert is_spaced("$x = 1$") and is_spaced("$\\frac{a}{b}$") and not is_spaced("$H^+$") and not is_spaced("word")
+
+
+def test_a_spaced_maths_word_is_not_split_at_its_own_spaces():
+    from handprinter.recognition.refit import segment_by_count
+
+    # "λ  =   h/mv   (de  Broglie)": the widest gaps are inside the maths
+    mask = np.zeros((30, 400), dtype=bool)
+    for x0, x1 in [(0, 30), (40, 60), (95, 150), (178, 186), (196, 232), (250, 370)]:
+        mask[8:22, x0:x1] = True
+    seg = segment_by_count(mask, [6, 3, 8], [True, False, False])
+    assert seg is not None and [(b[0], b[2]) for b in seg.boxes] == [(0, 150), (178, 232), (250, 370)]
+
+
+def test_tails_of_neighbouring_lines_are_not_part_of_a_line():
+    from handprinter.recognition.refit import own_ink
+
+    mask = np.zeros((90, 300), dtype=bool)
+    mask[35:55, 10:290] = True    # the line's letters
+    mask[0:15, 100:104] = True    # a descender of the line above, cut by the box edge
+    mask[80:90, 200:204] = True   # an ascender of the line below, cut by the box edge
+    mask[25:29, 50:54] = True     # a dot over an i
+    mask[60:75, 150:154] = True   # the line's own tail written as a separate stroke
+    kept = own_ink(mask)
+    assert not kept[0:15].any() and not kept[80:90].any()
+    assert kept[25:29, 50:54].all() and kept[60:75, 150:154].all() and kept[35:55].sum() == mask[35:55].sum()

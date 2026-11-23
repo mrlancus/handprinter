@@ -330,6 +330,15 @@ def components(mask: np.ndarray) -> np.ndarray:
     Run-length labelling with union-find, numpy for the runs and plain Python for the joins
     (fast enough for a page at working resolution).
     """
+    return _label(mask)[0]
+
+
+def label_components(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Like `components`, plus an image holding each ink pixel's component number (row in the boxes), -1 elsewhere."""
+    return _label(mask, with_image=True)
+
+
+def _label(mask: np.ndarray, with_image: bool = False) -> tuple[np.ndarray, np.ndarray]:
     h, w = mask.shape
     padded = np.zeros((h, w + 2), dtype=np.int8)
     padded[:, 1:-1] = mask
@@ -341,7 +350,7 @@ def components(mask: np.ndarray) -> np.ndarray:
     run_e = xs[~starts_mask]  # exclusive
     n = len(run_y)
     if n == 0:
-        return np.zeros((0, 5), dtype=np.int64)
+        return np.zeros((0, 5), dtype=np.int64), np.full(mask.shape, -1, dtype=np.int32)
     parent = list(range(n))
 
     def find(a: int) -> int:
@@ -374,7 +383,12 @@ def components(mask: np.ndarray) -> np.ndarray:
     lengths = run_e - run_s
     for k, g in enumerate(groups):
         out[k] = (run_s[g].min(), run_y[g].min(), run_e[g].max(), run_y[g].max() + 1, lengths[g].sum())
-    return out
+    image = np.full(mask.shape, -1, dtype=np.int32)
+    if with_image:
+        for k, g in enumerate(groups):
+            for r in g:
+                image[run_y[r], run_s[r]:run_e[r]] = k
+    return out, image
 
 
 def _dilate_h(m: np.ndarray, r: int) -> np.ndarray:
