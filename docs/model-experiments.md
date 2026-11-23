@@ -1,4 +1,56 @@
-# Model experiments: DiffusionPen and Eruku
+# Model experiments: what remains, what was verified, what comes next
+
+## Research and review (2026-11-23)
+
+Question: once enough handwriting is labelled, what is left to turn it into a generator that writes like you, on an RTX 2060 (6 GB)?
+
+Method: cloned the upstream code and read it line by line (not the READMEs alone), downloaded the real weights, ran them on CPU in the build container, and searched for newer methods. Your own page crops were used locally as style input and were never committed.
+
+### Findings
+
+| Finding | Evidence | Consequence |
+| --- | --- | --- |
+| DiffusionPen's style comes only from 5 reference word images. A MobileNetV2 encoder averages their features into the time embedding; the writer label is ignored when style features are given. | `unet.py: forward` at commit 059e2f2 | Custom style needs no IAM loaders, only a small driver. The earlier "blocked: no entry point" was too pessimistic. |
+| A driver that rebuilds the model exactly as `train.py: main()` does generates real words from your 5 crops. | Ran with the real weights on CPU: 8 words, about 2.6 s per word. | **DiffusionPen generation works.** |
+| Fine-tuning is the upstream loop (noise-prediction MSE, AdamW) on your own words. The UNet has 38M trainable parameters; the 132M-parameter CANINE text encoder can be frozen. | Ran 30 steps on CPU; loss reported; checkpoint saved and reloaded for generation. | **Personalisation is possible on a 6 GB card** (about 600 MB of optimiser state). Speed on the 2060 is not measured yet. |
+| Zero-shot output is legible and picks up some of your print-like spacing, but strokes are heavier than your pen. | Looked at the outputs. | Fine-tuning is the main lever for looking like you. |
+| Eruku's `generate()` already removes the style image from its output. Passing the style crop's transcription (`style_text`) is supported and helps. | `modeling_eruku.py` on Hugging Face, revision 13f4f75 | The runner was right to use the documented call; the app already passes the transcription. |
+| Eruku is T5-Large (about 770M parameters, 2.9 GB of weights) with no documented own-writer fine-tune. | Model card and `train_eruku_continous.py` | Use it zero-shot as the line-level baseline. A LoRA fine-tune is possible in principle but unverified, so it is not built. |
+| Eruku was **not run here**: loading it executes code fetched from Hugging Face (`trust_remote_code`), and that was refused in the build environment. | Permission refusal | The first real Eruku run will be on your PC. |
+| Both runners would have crashed on `probe` (a duplicate `ok` key in the result event). | Found by running | Fixed. |
+| A `.env` saved by older Notepad or PowerShell 5 starts with a byte-order mark, which silently broke the first setting. | Read the loader | Fixed: `.env` is read as `utf-8-sig`, and the setup script writes without a BOM. |
+| DiffBrush (ICCV 2025, MIT) generates whole lines, so it could capture joins between words. Its weights are only on Google Drive or Baidu, and its script needs multi-GPU NCCL (Linux). | Read `generate.py` at da9addc | Candidate for a third adapter later. Not built now. |
+| No public model writes maths with a personal style. DiffMath (2026 preprint) generates maths expressions but has no style conditioning that we could confirm. DiffusionPen's character set has no maths symbols. | Searches; `CHARSET` | Maths stays as recognition data. Generating your maths would need composing it from your own symbol crops, which is future work. |
+
+### Review of the findings
+
+- The verification is of the **mechanics** (it loads, generates, trains, saves and reloads), not of quality on a GPU or after a real fine-tune. Thirty CPU steps prove only that the path works.
+- The style crops were cut from a screenshot of a page, which is lower quality than your real photos. Zero-shot quality on real crops may be better.
+- DiffusionPen is word-level and its character set is the IAM set. Lines are made by placing words. Generated lines should use your own measured word gaps, which the dataset already records; that is not built yet.
+- The time estimate (10–30 minutes for 2000 steps on a 2060) is an extrapolation and is labelled as such in the UI.
+
+### Plan, in order
+
+1. **Done (this change):**
+   - DiffusionPen driver: generation, pinned weight download (about 1.5 GB) and fine-tuning.
+   - App wiring: Experiments has a Download button, a "Fine-tune on your handwriting" panel, and a Weights choice (Pretrained or one of your fine-tunes) when generating.
+   - Training uses training-split words only, so validation and test words stay unseen.
+   - `SetupModels.bat` creates one CUDA environment for both models.
+2. **On your PC:**
+   - Run `SetupModels.bat`.
+   - In Experiments, press **Download weights**, then **Run memory preflight**.
+   - Approve a few hundred words and export a snapshot.
+   - Create a style profile and run the baseline.
+   - Fine-tune, generate again with your fine-tune, and compare blind.
+3. **Next to build:**
+   - Line composition from your own spacing statistics.
+   - Measured GPU timings fed back into the UI.
+   - Eruku zero-shot on lines once it has run on your PC.
+   - Then consider DiffBrush, or a LoRA fine-tune of Eruku.
+
+---
+
+# Background notes (2026-11-22)
 
 Research done 2026-11-22 by a Sonnet research subagent, reading primary sources. [V] = read in the source, [I] = inference, [E] = estimate. Commit hashes could not be read (the GitHub API was blocked from the research session). Record the hashes when you clone: the adapters log `git rev-parse HEAD` for every run.
 
@@ -52,21 +104,22 @@ Research done 2026-11-22 by a Sonnet research subagent, reading primary sources.
 | --- | --- | --- |
 | Baseline (no training) | `train.py --train_mode sampling` with style crops from a snapshot. Custom driver required, see below. | `generate_handwriting()` with a style crop. |
 | Levels | word | word, line |
-| Training in app | Not offered: no upstream fine-tune command. | Not offered: no upstream own-writer fine-tune. |
+| Training in app | **Fine-tune on your words** (driver, see above). | Not offered: no upstream own-writer fine-tune. |
 | Character check | Hard-coded set above; others reported per prompt. | Bytes accepted; non-ASCII warned as untested. |
 
 The app ships the Eruku runner script (`handprinter/adapters/runners/eruku_runner.py`). It uses only the documented model-card call, so it needs its own environment with torch and the pinned packages.
 
-DiffusionPen sampling is tied to the IAM loaders inside `train.py`. The upstream code has no documented "sample these words with these 5 style images" entry point. The DiffusionPen adapter therefore reports **blocked: no upstream entry point for custom style references**. The next step is to write a small driver against the cloned repo once you can inspect it locally. We do not guess its internal import paths.
+*(Superseded 2026-11-23.)* This said DiffusionPen sampling was tied to the IAM loaders. Reading the code showed that it is not. The driver `handprinter/adapters/runners/diffusionpen_runner.py` imports only `unet.py` and `feature_extractor.py`.
 
 ## Experiment protocol (implemented in the app)
 
 1. Freeze a dataset snapshot. Every run records the snapshot ID, the split manifest hash, seed, checkpoint, code commit, configuration, environment, duration, peak memory, outputs and errors.
 2. Run a baseline on the fixed prompt set (`handprinter/evaluation.py: DEFAULT_PROMPTS`), separately for words and short lines, with several seeds.
-3. Personalise. This is blocked until an upstream fine-tune path exists, and the UI says so.
+3. Personalise: fine-tune DiffusionPen on the snapshot's training words (Experiments → Fine-tune). Each fine-tune is a run of kind `train`, and its weights stay in `<data>/models/diffusionpen/personal/<run>/`.
 4. Run blind A/B ratings with a reveal, compared only on prompts both models support. Excluded prompts are listed.
 5. OCR exact-text checks are a fallible proxy. No metric is ever synthesised.
 
 ## Status
 
-Both adapters are **implemented and blocked on assets and GPU** in the cloud build environment. Neither has been run.
+- DiffusionPen: generation and fine-tuning were verified on CPU with the real weights (2026-11-23). GPU runs are not yet measured.
+- Eruku: not run (see above).

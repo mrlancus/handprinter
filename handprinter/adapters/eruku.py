@@ -62,7 +62,7 @@ class ErukuAdapter(ModelAdapter):
         next_step = ""
         if not checks["environment"]:
             blockers.append("no Eruku Python environment configured")
-            next_step = "create a separate venv with PyTorch (CUDA build) and the packages in docs/model-experiments.md, then set HANDPRINTER_ERUKU_PYTHON"
+            next_step = "run SetupModels.bat on the PC (one environment serves DiffusionPen and Eruku), then restart Handprinter"
         else:
             probe = self.probe()
             checks.update({k: bool(probe.get(k)) for k in ("torch", "transformers", "cuda", "weights_cached")})
@@ -71,7 +71,7 @@ class ErukuAdapter(ModelAdapter):
                 next_step = "fix the adapter environment (see the error), then refresh"
             elif not checks["torch"] or not checks["transformers"]:
                 blockers.append("torch/transformers missing in the Eruku environment")
-                next_step = "pip install torch torchvision transformers==4.53.0 diffusers==0.34.0 einops pillow huggingface_hub in that environment"
+                next_step = "re-run SetupModels.bat"
             elif not checks["weights_cached"]:
                 blockers.append(f"weights for {self.model_id} are not downloaded (about 3 GB plus T5-large and the VAE)")
                 next_step = "start the download from Experiments (explicit action)"

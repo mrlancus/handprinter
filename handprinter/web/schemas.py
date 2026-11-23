@@ -159,6 +159,16 @@ class RunIn(BaseModel):
     snapshot_id: str | None = None
     kind: Literal["baseline", "generation"] = "baseline"
     options: dict[str, float] = {}
+    checkpoint: str | None = Field(default=None, pattern=r"^(pretrained|run_[0-9a-f]{16})$")
+
+
+class TrainIn(BaseModel):
+    snapshot_id: str
+    name: str = Field(default="", max_length=80)
+    steps: int = Field(default=2000, ge=50, le=50000)
+    batch_size: int = Field(default=8, ge=1, le=64)
+    lr: float = Field(default=5e-5, gt=0, le=1e-3)
+    seed: int = 7
 
 
 class StyleProfileIn(BaseModel):

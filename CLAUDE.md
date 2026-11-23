@@ -31,7 +31,7 @@ Frontend: browser-native ES modules + JSDoc, checked by `tsc --checkJs` (dev onl
 | `prompts/recognition/` | Versioned recognition prompts (`v1.md`; `v2.md` adds LaTeX maths; current `v3.md` fades context so only the target line is read) |
 | `.claude/agents/`, `.claude/skills/` | Haiku recogniser subagent and `/recognise` skill |
 | `tests/` | pytest suite + fixture generators (non-personal, synthetic) |
-| `scripts/` | Launchers, screenshot harness |
+| `scripts/` | Launchers (`setup_models.ps1` via `SetupModels.bat` sets up the model environment), screenshot harness |
 | `relay/` | Optional Cloudflare Worker giving online mode a fixed free workers.dev address (`worker.js`, tests: `node --test relay/worker.test.mjs`) |
 | `docs/` | Architecture, status, design system, model research, screenshots |
 
@@ -63,4 +63,4 @@ python -m handprinter online       # same + Cloudflare Tunnel + password (docs/o
 
 ## Current status
 
-Core release implemented and fixture-verified; live Haiku recognition verified once on a fixture page; model adapters blocked on GPU environment/weights. Details and next steps: [docs/status.md](docs/status.md). Performance: [docs/performance.md](docs/performance.md).
+Core release implemented and fixture-verified; live Haiku recognition verified once on a fixture page; DiffusionPen generation + fine-tuning verified on CPU with real weights (GPU not yet measured); Eruku implemented, not run. Details and next steps: [docs/status.md](docs/status.md). Performance: [docs/performance.md](docs/performance.md).

@@ -129,7 +129,7 @@ def _adapter_infer(job: Job) -> Any:
 
 
 def _adapter_train(job: Job) -> Any:
-    return _adapter(job).train()
+    return evaluation.run_training(job.conn, job.store, job.settings, job.id, job.params, job.progress, job.cancelled)
 
 
 HANDLERS: dict[str, Handler] = {

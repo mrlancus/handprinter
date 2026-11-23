@@ -11,20 +11,22 @@ export async function render(root) {
   const body = h('div', { class: 'page-body' });
   mount(root,
     h('header', { class: 'page-head' },
-      h('div', {}, h('h1', { text: 'Experiments' }), h('p', { class: 'muted', text: 'DiffusionPen and Eruku, compared on the same prompts and the same snapshot. Nothing large starts on its own.' }))),
+      h('div', {}, h('h1', { text: 'Experiments' }), h('p', { class: 'muted', text: 'DiffusionPen and Eruku, compared on the same prompts and the same snapshot; fine-tune DiffusionPen on your own words. Nothing large starts on its own.' }))),
     body);
 
   async function load() {
     mount(body, loadingState(3));
     try {
-      const [adapters, runs, prompts, profiles, snaps, cmpWord, cmpLine] = await Promise.all([
+      const [adapters, runs, prompts, profiles, snaps, cmpWord, cmpLine, checkpoints] = await Promise.all([
         api('/api/experiments/adapters'), api('/api/experiments/runs'), api('/api/experiments/prompts'), api('/api/experiments/style-profiles'),
         api('/api/dataset/snapshots'), api('/api/experiments/comparison?level=word'), api('/api/experiments/comparison?level=line'),
+        api('/api/experiments/checkpoints'),
       ]);
       const ready = adapters.filter((/** @type {any} */ a) => a.state === 'ready');
       mount(body,
         h('div', { class: 'ex-adapters' }, adapters.map((/** @type {any} */ a) => adapterCard(a, load))),
-        generatePanel(ready, profiles, prompts),
+        generatePanel(ready, profiles, prompts, checkpoints),
+        trainPanel(ready.filter((/** @type {any} */ a) => a.capabilities.can_train_in_app), snaps, checkpoints, load),
         h('div', { class: 'ex-grid' }, profilesPanel(profiles, snaps, load), promptsPanel(prompts)),
         comparisonPanel(cmpWord, cmpLine),
         runsPanel(runs));
@@ -46,7 +48,7 @@ function adapterCard(a, reload) {
       reload();
     } catch (err) { toast(err instanceof Error ? err.message : String(err), 'error'); }
   };
-  const canDownload = a.name === 'eruku' && a.checks.environment && a.checks.torch && !a.checks.weights_cached;
+  const canDownload = a.checks.environment && a.checks.torch && (a.name === 'eruku' ? !a.checks.weights_cached : !a.checks.weights);
   return h('section', { class: 'panel ex-adapter' },
     h('div', { class: 'panel__head' },
       h('div', {}, h('h2', { text: a.title }), h('div', { class: 'row xs' }, Object.entries(a.upstream).map(([k, v]) => String(v).startsWith('http') ? h('a', { href: v, target: '_blank', rel: 'noopener noreferrer' }, k, icon('external')) : h('span', { class: 'muted', text: `${k}: ${v}` })))),
@@ -67,8 +69,8 @@ function adapterCard(a, reload) {
         !ready && !canDownload ? h('span', { class: 'xs muted', text: 'Actions appear once the blockers above are resolved. Run python -m handprinter doctor for details.' }) : null)));
 }
 
-/** @param {any[]} ready @param {any[]} profiles @param {any} prompts */
-function generatePanel(ready, profiles, prompts) {
+/** @param {any[]} ready @param {any[]} profiles @param {any} prompts @param {any[]} checkpoints */
+function generatePanel(ready, profiles, prompts, checkpoints) {
   if (!ready.length) {
     return h('section', { class: 'panel' }, setupState({
       title: 'Generation is not available yet',
@@ -80,12 +82,17 @@ function generatePanel(ready, profiles, prompts) {
   const level = /** @type {HTMLSelectElement} */ (h('select', {}, h('option', { value: 'word' }, 'Words'), h('option', { value: 'line' }, 'Short lines')));
   const profile = /** @type {HTMLSelectElement} */ (h('select', {}, profiles.map((p) => h('option', { value: p.id }, p.name))));
   const text = /** @type {HTMLTextAreaElement} */ (h('textarea', { placeholder: 'One word or short line per line', rows: 3 }));
+  const weights = /** @type {HTMLSelectElement} */ (h('select', {}));
+  const fillWeights = () => mount(weights, h('option', { value: 'pretrained' }, 'Pretrained (not trained on you)'),
+    checkpoints.filter((c) => c.adapter === adapter.value).map((c) => h('option', { value: c.run_id }, `${c.name} (${c.train_words} words)`)));
+  fillWeights();
+  adapter.addEventListener('change', fillWeights);
   const out = h('div', { class: 'stack' });
   async function run(/** @type {boolean} */ baseline) {
     const texts = baseline ? null : text.value.split('\n').map((s) => s.trim()).filter(Boolean);
     if (!baseline && !texts?.length) { mount(out, callout('Type some text first.', 'error')); return; }
     try {
-      const { job_id } = await api('/api/experiments/runs', { body: { adapter: adapter.value, level: level.value, texts, style_profile_id: profile.value || null, kind: baseline ? 'baseline' : 'generation' } });
+      const { job_id } = await api('/api/experiments/runs', { body: { adapter: adapter.value, level: level.value, texts, style_profile_id: profile.value || null, kind: baseline ? 'baseline' : 'generation', checkpoint: weights.value || 'pretrained' } });
       mount(out, h('p', { class: 'small muted', text: 'Running in the worker (GPU lane, one job at a time)…' }));
       const job = await trackJob(job_id);
       if (job.status !== 'succeeded') { mount(out, callout(job.error || job.status, 'error')); return; }
@@ -97,11 +104,42 @@ function generatePanel(ready, profiles, prompts) {
   }
   return h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h2', { text: 'Generate' }), h('span', { class: 'xs muted', text: 'style comes from a saved profile (cached references, not learned weights)' })),
     h('div', { class: 'panel__body stack' },
-      h('div', { class: 'row' }, h('label', { class: 'field' }, h('span', { text: 'Model' }), adapter), h('label', { class: 'field' }, h('span', { text: 'Level' }), level), h('label', { class: 'field' }, h('span', { text: 'Style profile' }), profile)),
+      h('div', { class: 'row' }, h('label', { class: 'field' }, h('span', { text: 'Model' }), adapter), h('label', { class: 'field' }, h('span', { text: 'Level' }), level), h('label', { class: 'field' }, h('span', { text: 'Style profile' }), profile), h('label', { class: 'field' }, h('span', { text: 'Weights' }), weights)),
       h('label', { class: 'field' }, h('span', { text: 'Text' }), text),
       h('div', { class: 'row' },
         h('button', { class: 'btn btn--primary', type: 'button', onClick: () => run(false) }, icon('play'), 'Generate'),
         h('button', { class: 'btn', type: 'button', onClick: () => run(true) }, `Run baseline on the fixed prompt set (${prompts.prompts.word.length} words, ${prompts.prompts.line.length} lines × ${prompts.seeds.length} seeds)`)),
+      out));
+}
+
+/** @param {any[]} trainable @param {any[]} snaps @param {any[]} checkpoints @param {() => void} reload */
+function trainPanel(trainable, snaps, checkpoints, reload) {
+  if (!trainable.length) return null;
+  const adapter = /** @type {HTMLSelectElement} */ (h('select', {}, trainable.map((a) => h('option', { value: a.name }, a.title))));
+  const snap = /** @type {HTMLSelectElement} */ (h('select', {}, snaps.map((s) => h('option', { value: s.id }, `${s.name} (${s.counts.words} words)`))));
+  const name = /** @type {HTMLInputElement} */ (h('input', { type: 'text', value: 'my handwriting', maxlength: 80 }));
+  const steps = /** @type {HTMLInputElement} */ (h('input', { type: 'number', value: '2000', min: '50', max: '50000', step: '50' }));
+  const out = h('div', { class: 'stack' });
+  async function start() {
+    try {
+      const { job_id, train_words } = await api(`/api/experiments/adapters/${adapter.value}/train`, { body: { snapshot_id: snap.value, name: name.value, steps: Number(steps.value) } });
+      mount(out, h('p', { class: 'small muted', text: `Fine-tuning on ${train_words} training words in the worker. You can leave this page; progress shows in the job tray.` }));
+      const job = await trackJob(job_id);
+      if (job.status !== 'succeeded') { mount(out, callout(job.error || job.status, 'error')); return; }
+      toast(`Fine-tune finished (final loss ${job.result.final_loss})`);
+      reload();
+    } catch (err) { mount(out, callout(err instanceof Error ? err.message : String(err), 'error')); }
+  }
+  return h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h2', { text: 'Fine-tune on your handwriting' }),
+    h('span', { class: 'xs muted', text: 'training-split words only; validation and test words stay unseen' })),
+    h('div', { class: 'panel__body stack' },
+      h('p', { class: 'xs muted', text: 'Teaches the model your letter shapes, pen weight and spacing. Needs at least 50 approved words; a few hundred is better. On an RTX 2060 expect roughly 10–30 minutes for 2000 steps (not yet measured on your PC).' }),
+      checkpoints.length ? h('ul', { class: 'plain-list' }, checkpoints.map((c) => h('li', {}, h('strong', { text: c.name }), h('span', { class: 'xs muted', text: ` · ${c.adapter} · ${c.train_words} words · ${c.finished_at}` })))) : null,
+      snaps.length ? h('div', { class: 'row' },
+        h('label', { class: 'field' }, h('span', { text: 'Model' }), adapter), h('label', { class: 'field' }, h('span', { text: 'Snapshot' }), snap),
+        h('label', { class: 'field' }, h('span', { text: 'Name' }), name), h('label', { class: 'field' }, h('span', { text: 'Steps' }), steps),
+        h('button', { class: 'btn btn--primary', type: 'button', onClick: () => { if (confirm('Start fine-tuning now? It uses the GPU until it finishes.')) start(); } }, icon('play'), 'Fine-tune'))
+        : h('p', { class: 'small muted' }, 'Export a snapshot in ', h('a', { href: '#/dataset', text: 'Dataset' }), ' first.'),
       out));
 }
 

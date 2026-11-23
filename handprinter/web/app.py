@@ -552,6 +552,30 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             raise HTTPException(409, f"{adapter.title} is not ready: {'; '.join(st.blockers)}. Next step: {st.next_step}")
         return {"job_id": jobs.enqueue(conn, "adapter_infer", body.model_dump())}
 
+    @app.post("/api/experiments/adapters/{name}/train")
+    def start_training(name: str, body: S.TrainIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        adapter = all_adapters(settings.adapter_env).get(name)
+        if adapter is None:
+            raise HTTPException(404, "unknown adapter")
+        caps = adapter.capabilities()
+        if not caps.can_train_in_app:
+            raise HTTPException(409, f"{adapter.title}: training is not offered ({caps.train_note})")
+        st = adapter.status()
+        if st.state != "ready":
+            raise HTTPException(409, f"{adapter.title} is not ready: {'; '.join(st.blockers)}. Next step: {st.next_step}")
+        try:
+            items, left_out = evaluation.training_items(store, conn, body.snapshot_id, caps.charset)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        if len(items) < evaluation.MIN_TRAIN_WORDS:
+            raise HTTPException(409, f"only {len(items)} usable training words in this snapshot "
+                                     f"(left out: {left_out or 'none'}); approve at least {evaluation.MIN_TRAIN_WORDS} first")
+        return {"job_id": jobs.enqueue(conn, "adapter_train", {"adapter": name, **body.model_dump()}), "train_words": len(items)}
+
+    @app.get("/api/experiments/checkpoints")
+    def checkpoints(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
+        return evaluation.personal_checkpoints(conn)
+
     @app.get("/api/experiments/runs")
     def runs(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
         return evaluation.list_runs(conn)

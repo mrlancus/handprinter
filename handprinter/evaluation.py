@@ -89,11 +89,14 @@ def run_inference(
     with transaction(conn):
         conn.execute(
             "INSERT INTO runs (id, adapter, kind, job_id, snapshot_id, seed, checkpoint, code_version, config, environment, status, started_at, outputs_dir, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (run_id, adapter.name, config["kind"], job_id, params.get("snapshot_id"), seeds[0], params.get("checkpoint", "pretrained"),
+            (run_id, adapter.name, config["kind"], job_id, params.get("snapshot_id"), seeds[0], params.get("checkpoint") or "pretrained",
              code_version(), dumps(config), dumps(env), "running", now_iso(), store.relative(out_dir), now_iso()),
         )
     try:
-        request = InferRequest(supported, level, style_paths, seeds, out_dir, {**params.get("options", {}), "style_text": style_texts[0] if style_texts else ""})
+        options: dict[str, Any] = {**params.get("options", {}), "style_text": style_texts[0] if style_texts else ""}
+        if params.get("checkpoint") and params["checkpoint"] != "pretrained":
+            options["checkpoint_path"] = str(personal_checkpoint(conn, store, adapter.name, params["checkpoint"]))
+        request = InferRequest(supported, level, style_paths, seeds, out_dir, options)
         result = adapter.infer(request, lambda e: progress(float(e.get("fraction", 0)), str(e.get("message", ""))), cancelled)
     except (RunnerCancelled, JobCancelled):
         conn.execute("UPDATE runs SET status='cancelled', finished_at=?, duration_s=? WHERE id=?", (now_iso(), time.time() - started, run_id))
@@ -180,3 +183,95 @@ def ab_summary(conn: sqlite3.Connection) -> dict[str, Any]:
 def list_runs(conn: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM runs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [row_dict(r, ("config", "environment")) for r in rows]  # type: ignore[misc]
+
+
+# ---------- personal fine-tuning ----------
+
+def personal_checkpoint(conn: sqlite3.Connection, store: Store, adapter: str, run_id: str) -> Path:
+    """The weights a successful training run produced (they stay in the data directory)."""
+    row = conn.execute("SELECT outputs_dir FROM runs WHERE id = ? AND adapter = ? AND kind = 'train' AND status = 'succeeded'",
+                       (run_id, adapter)).fetchone()
+    if row is None:
+        raise ValueError(f"no finished {adapter} training run {run_id}")
+    path = store.resolve_relative(row["outputs_dir"]) / "ema_ckpt.pt"
+    if not path.is_file():
+        raise ValueError(f"training run {run_id} has no checkpoint file any more")
+    return path
+
+
+def training_items(store: Store, conn: sqlite3.Connection, snapshot_id: str, charset: str | None) -> tuple[list[dict[str, str]], dict[str, int]]:
+    """Training-split words only (validation and test stay unseen), with the reasons others were left out."""
+    snap = conn.execute("SELECT path FROM snapshots WHERE id = ?", (snapshot_id,)).fetchone()
+    if snap is None:
+        raise ValueError("snapshot not found")
+    root = store.resolve_relative(snap["path"])
+    items: list[dict[str, str]] = []
+    left_out = {"not in the training split": 0, "characters the model cannot write": 0, "empty text": 0}
+    for line in (root / "words.jsonl").read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        text = (rec.get("text") or "").strip()
+        if rec.get("split") != "train":
+            left_out["not in the training split"] += 1
+        elif not text:
+            left_out["empty text"] += 1
+        elif charset is not None and any(c not in charset for c in text):
+            left_out["characters the model cannot write"] += 1
+        else:
+            items.append({"image": str(root / rec["image"]), "text": text})
+    return items, {k: v for k, v in left_out.items() if v}
+
+
+MIN_TRAIN_WORDS = 50
+
+
+def run_training(
+    conn: sqlite3.Connection, store: Store, settings: Settings, job_id: str, params: dict[str, Any],
+    progress: Callable[[float, str], None], cancelled: Callable[[], bool],
+) -> dict[str, Any]:
+    from handprinter.adapters.diffusionpen import TrainRequest
+
+    adapter = all_adapters(settings.adapter_env)[params["adapter"]]
+    caps = adapter.capabilities()
+    if not caps.can_train_in_app:
+        raise ValueError(f"{adapter.title}: {caps.train_note}")
+    items, left_out = training_items(store, conn, params["snapshot_id"], caps.charset)
+    if len(items) < MIN_TRAIN_WORDS:
+        raise ValueError(f"only {len(items)} usable training words in this snapshot; approve at least {MIN_TRAIN_WORDS} first")
+    run_id = new_id("run")
+    out_dir = store.dir("models") / adapter.name / "personal" / run_id
+    out_dir.mkdir(parents=True)
+    steps, batch, seed = int(params.get("steps", 2000)), int(params.get("batch_size", 8)), int(params.get("seed", 7))
+    config = {"kind": "train", "steps": steps, "batch_size": batch, "lr": float(params.get("lr", 5e-5)), "seed": seed,
+              "train_words": len(items), "left_out": left_out, "name": params.get("name") or f"fine-tune {run_id[-6:]}"}
+    env = {"python": platform.python_version(), "platform": platform.platform(), "adapter_status": adapter.status().as_dict()}
+    started = time.time()
+    with transaction(conn):
+        conn.execute(
+            "INSERT INTO runs (id, adapter, kind, job_id, snapshot_id, seed, checkpoint, code_version, config, environment, status, started_at, outputs_dir, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (run_id, adapter.name, "train", job_id, params["snapshot_id"], seed, "pretrained", code_version(), dumps(config),
+             dumps(env), "running", now_iso(), store.relative(out_dir), now_iso()),
+        )
+    try:
+        request = TrainRequest(items, out_dir, steps, batch, config["lr"], seed)
+        result = adapter.train(request, lambda e: progress(float(e.get("fraction", 0)), str(e.get("message", ""))), cancelled)
+    except (RunnerCancelled, JobCancelled):
+        conn.execute("UPDATE runs SET status='cancelled', finished_at=?, duration_s=? WHERE id=?", (now_iso(), time.time() - started, run_id))
+        raise JobCancelled() from None
+    except Exception as exc:
+        conn.execute("UPDATE runs SET status='failed', error=?, finished_at=?, duration_s=? WHERE id=?",
+                     (str(exc)[:2000], now_iso(), time.time() - started, run_id))
+        raise
+    if not (out_dir / "ema_ckpt.pt").is_file():
+        conn.execute("UPDATE runs SET status='failed', error=?, finished_at=? WHERE id=?", ("the runner reported success but wrote no checkpoint", now_iso(), run_id))
+        raise RuntimeError("the runner reported success but wrote no checkpoint")
+    config["losses"] = result.get("losses", [])
+    config["items_skipped_by_runner"] = result.get("items_skipped", 0)
+    conn.execute("UPDATE runs SET status='succeeded', config=?, finished_at=?, duration_s=?, peak_memory_mb=? WHERE id=?",
+                 (dumps(config), now_iso(), time.time() - started, result.get("peak_memory_mb"), run_id))
+    return {"run_id": run_id, "train_words": len(items), "left_out": left_out, "final_loss": (config["losses"] or [{}])[-1].get("loss")}
+
+
+def personal_checkpoints(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute("SELECT id, adapter, snapshot_id, config, finished_at FROM runs WHERE kind = 'train' AND status = 'succeeded' ORDER BY created_at DESC").fetchall()
+    return [{"run_id": r["id"], "adapter": r["adapter"], "snapshot_id": r["snapshot_id"], "finished_at": r["finished_at"],
+             "name": json.loads(r["config"]).get("name"), "train_words": json.loads(r["config"]).get("train_words")} for r in rows]

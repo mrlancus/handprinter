@@ -25,7 +25,7 @@ def _load_dotenv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.is_file():
         return values
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():  # -sig: Notepad and PowerShell 5 may add a BOM
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -91,7 +91,8 @@ def load_settings(env: dict[str, str] | None = None, dotenv: Path | None = None)
         # unless explicitly turned off.
         headless_recognition=(merged.get("HANDPRINTER_HEADLESS_RECOGNITION") or ("1" if online else "0")) == "1",
         headless_concurrency=max(1, min(12, int(merged.get("HANDPRINTER_HEADLESS_CONCURRENCY") or 12))),
-        adapter_env={k: v for k, v in merged.items() if k.startswith(("HANDPRINTER_ERUKU_", "HANDPRINTER_DIFFUSIONPEN_"))},
+        adapter_env={"HANDPRINTER_DIFFUSIONPEN_WEIGHTS": str(data_dir / "models" / "diffusionpen"),
+                     **{k: v for k, v in merged.items() if k.startswith(("HANDPRINTER_ERUKU_", "HANDPRINTER_DIFFUSIONPEN_")) and v}},
     )
 
 
