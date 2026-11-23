@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from handprinter import dataset, evaluation, ingest, jobs, pages
+from handprinter import dataset, evaluation, ingest, jobs, pages, sheets
 from handprinter.adapters import all_adapters
 from handprinter.adapters.base import RunnerCancelled
 from handprinter.config import Settings
@@ -53,11 +53,19 @@ def _import_upload(job: Job) -> Any:
     results = ingest.import_upload(job.conn, job.store, staged, p["filename"], batch, job.progress)
     staged.unlink(missing_ok=True)
     out = [r.as_dict() for r in results]
-    if p.get("detect", True):
+    if p.get("detect", True) or p.get("sheet_id"):
         for sid in {sid for r in results for sid in r.source_ids}:
             if pages.get_source(job.conn, sid)["detection_status"] == "none":
                 pages.run_detection(job.conn, job.store, sid)
-    return {"entries": out}
+    sheet_results = []
+    if p.get("sheet_id"):  # a written-out writing sheet: label it from the sheet, no recognition needed
+        for sid in sorted({sid for r in results for sid in r.source_ids}):
+            sheet_results.append(sheets.apply_sheet(job.conn, job.store, sid, p["sheet_id"]))
+    return {"entries": out, "sheets": sheet_results}
+
+
+def _apply_sheet(job: Job) -> Any:
+    return sheets.apply_sheet(job.conn, job.store, job.params["source_id"], job.params["sheet_id"])
 
 
 def _detect(job: Job) -> Any:
@@ -133,6 +141,7 @@ HANDLERS: dict[str, Handler] = {
     "headless_recognition": _headless_recognition,
     "export_snapshot": _export_snapshot,
     "recut_line": _recut_line,
+    "apply_sheet": _apply_sheet,
     "adapter_preflight": _adapter_preflight,
     "adapter_download": _adapter_download,
     "adapter_infer": _adapter_infer,

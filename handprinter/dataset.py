@@ -264,6 +264,8 @@ def export_snapshot(
         raise ValueError("nothing to export: no examples match this policy and filter yet")
     groups, splits, warnings = canonical_splits(conn, examples, config)
     vocab, dropped = unseen_words(examples, splits, config)
+    from handprinter.sheets import origin_of  # writing-sheet pages are labelled from known text, not read
+    sheet_of = origin_of(conn)
     snapshot_id = new_id("snap")
     root = store.dir("datasets") / snapshot_id
     for sub in ("words", "lines", "maths"):
@@ -295,6 +297,8 @@ def export_snapshot(
             "crop": {"frame": "processed", "x": region["x"], "y": region["y"], "w": region["w"], "h": region["h"],
                      "frame_w": region["frame_w"], "frame_h": region["frame_h"], "processing_rev": region["processing_rev"]},
             "source_id": ex.source_id, "line_id": region["parent_id"] if ex.kind == "word" else None,
+            "origin": "writing_sheet" if ex.source_id in sheet_of else "notes",
+            "sheet": sheet_of.get(ex.source_id),
             "group": groups[ex.source_id], "source_type": ex.source_type, "session": ex.session, "style_era": region["style_era"],
             "annotation_revision": ex.revision, "status": region["status"], "text_origin": region["text_origin"],
             "review": "human_approved" if region["status"] == "approved" else "unreviewed_machine_proposal",
@@ -310,7 +314,12 @@ def export_snapshot(
         "splits": dict(Counter(r["split"] for k in records for r in records[k])),
         "unseen_words": sum(r["unseen_word"] for r in records["word"]), "unseen_vocabulary": len(vocab),
         "groups": len(set(groups.values())),
+        "origin": dict(Counter(r["origin"] for k in records for r in records[k])),
     }
+    sheet_share = counts["origin"].get("writing_sheet", 0) / max(1, sum(counts["origin"].values()))
+    if sheet_share > 0.4:
+        warnings.append(f"{sheet_share:.0%} of examples come from writing sheets: copied text tends to be neater than "
+                        "your natural writing; keep notes the larger share (about two thirds or more)")
     meta = {
         "snapshot_id": snapshot_id, "name": name, "created_at": now_iso(), "export_schema_version": EXPORT_SCHEMA_VERSION,
         "policy": policy, "policy_description": POLICIES[policy], "filters": filters.__dict__, "split_config": config.__dict__,

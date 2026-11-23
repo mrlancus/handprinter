@@ -1,0 +1,143 @@
+// Writing sheets: the app picks lines to copy by hand; an uploaded sheet page is labelled from the
+// known text (matched line by line), so it needs no recognition and very little checking.
+import { api, upload } from '../api.js';
+import { h, mount } from '../dom.js';
+import { hasMath, renderMath } from '../math.js';
+import { icon } from '../components/icons.js';
+import { callout, emptyState, errorState, loadingState } from '../components/states.js';
+import { trackJob } from '../jobs.js';
+import { toast } from '../app.js';
+
+/** @typedef {{id: string, number: number, created_at: string, focus: string, focus_label: string, lines: string[], pages: any[]}} Sheet */
+
+/** One sheet line, with maths rendered so you can see exactly what to write. @param {string} text */
+function sheetLine(text) {
+  const el = h('span', { class: 'sh-line__text' });
+  if (hasMath(text)) renderMath(el, text); else el.textContent = text;
+  return el;
+}
+
+/** @param {any} summary */
+function summaryText(summary) {
+  const parts = [`${summary.matched} of ${summary.sheet_lines} lines matched`];
+  if (summary.missing_sheet_lines?.length) parts.push(`not found: line ${summary.missing_sheet_lines.join(', ')}`);
+  if (summary.unmatched_lines) parts.push(`${summary.unmatched_lines} extra written line(s) flagged`);
+  return parts.join(' · ');
+}
+
+/** The Writing sheets tab of Sources. @param {URLSearchParams} params */
+export function sheetsTab(params) {
+  const body = h('div', { class: 'page-body sh' }, loadingState(2));
+  const open = params.get('sheet');
+  if (open) showSheet(open); else showList();
+
+  async function showList() {
+    mount(body, loadingState(2));
+    try {
+      const data = await api('/api/sheets');
+      const focus = /** @type {HTMLSelectElement} */ (h('select', { 'aria-label': 'What the sheet should practise' },
+        Object.entries(data.focuses).map(([v, label]) => h('option', { value: v }, /** @type {string} */ (label)))));
+      const create = h('button', { class: 'btn btn--primary', type: 'button', onClick: async () => {
+        create.setAttribute('disabled', '');
+        try {
+          const sheet = await api('/api/sheets', { body: { focus: focus.value } });
+          location.hash = `#/sources?tab=sheets&sheet=${sheet.id}`;
+        } catch (err) { create.removeAttribute('disabled'); toast(err instanceof Error ? err.message : String(err), 'error'); }
+      } }, icon('plus'), 'New sheet');
+      mount(body,
+        h('section', { class: 'panel sh-intro stack' },
+          h('h2', { text: 'Write out a sheet' }),
+          h('p', { class: 'small', text: 'The app picks real words and sentences that cover what your notes are short of: rare letters and letter pairs, capitals, digits, maths, Greek letters and chemistry, plus words you often write. You copy them by hand; because the text is known, nothing needs reading and checking is quick.' }),
+          h('p', { class: 'small muted', text: 'Write at your normal speed, the way you would in notes. Messy is fine and useful. Your notes stay the main source; sheets top up the rare things (keep them to about a third of the data).' }),
+          h('div', { class: 'row' }, h('label', { class: 'field field--inline' }, h('span', { text: 'Practise' }), focus), create)),
+        data.sheets.length
+          ? h('ul', { class: 'sh-list', role: 'list' }, data.sheets.map((/** @type {Sheet} */ s) => h('li', {},
+              h('a', { class: 'sh-card panel', href: `#/sources?tab=sheets&sheet=${s.id}` },
+                h('strong', { text: `Sheet ${s.number}` }),
+                h('span', { class: 'xs muted', text: `${s.focus_label} · ${new Date(s.created_at).toLocaleDateString()}` }),
+                h('span', { class: 'small sh-card__first', text: s.lines[0] || '' }),
+                s.pages.length ? h('span', { class: 'badge badge--ok' }, icon('check'), `${s.pages.length} page${s.pages.length === 1 ? '' : 's'} uploaded`)
+                  : h('span', { class: 'badge', text: 'Not written yet' })))))
+          : emptyState({ title: 'No sheets yet', icon: 'draw', body: 'Make one above, write it out on your iPad or paper, then upload it on the sheet’s page.' }));
+    } catch (err) { mount(body, errorState(err, showList)); }
+  }
+
+  /** @param {string} id */
+  async function showSheet(id) {
+    mount(body, loadingState(2));
+    try {
+      /** @type {Sheet} */
+      const sheet = await api(`/api/sheets/${id}`);
+      const result = h('div', { class: 'stack' });
+      const kind = /** @type {HTMLSelectElement} */ (h('select', { 'aria-label': 'Where you wrote it' },
+        h('option', { value: 'ipad' }, 'iPad'), h('option', { value: 'paper' }, 'Paper')));
+      const file = /** @type {HTMLInputElement} */ (h('input', { type: 'file', accept: 'image/*,.heic,.pdf', class: 'sr-only', id: 'sh-file',
+        onChange: () => send(file.files) }));
+      const pickBtn = h('label', { class: 'btn btn--primary', for: 'sh-file' }, icon('upload'), 'Upload the written page');
+
+      /** @param {FileList | null} files */
+      async function send(files) {
+        if (!files || !files.length) return;
+        mount(result, loadingState(1), h('p', { class: 'small muted', text: 'Uploading, finding your lines and matching them to the sheet…' }));
+        try {
+          const batch = await api('/api/batches', { body: { source_type: kind.value, sheet_id: sheet.id, note: `Writing sheet ${sheet.number}` } });
+          for (const f of Array.from(files)) {
+            const res = await upload(`/api/batches/${batch.batch_id}/files`, f, () => {});
+            if (res.status === 'rejected') throw new Error(res.detail);
+            const job = await trackJob(res.job_id);
+            if (job.status !== 'succeeded') throw new Error(job.error || 'import failed');
+            const entry = job.result.entries[0];
+            if (entry && entry.status === 'rejected') throw new Error(entry.detail || 'rejected');
+            for (const r of job.result.sheets || []) {
+              mount(result, callout(`${summaryText(r)}. The text is filled in: check the boxes and approve in Check.`, r.missing_sheet_lines.length || r.unmatched_lines ? 'review' : 'info'),
+                h('div', { class: 'row' }, h('a', { class: 'btn btn--primary', href: `#/check?source=${r.source_id}` }, icon('check'), 'Check this page'),
+                  h('a', { class: 'btn', href: `#/sources/${r.source_id}` }, 'See what it found')));
+            }
+            if (!(job.result.sheets || []).length) mount(result, callout('This photo was already imported before, so it was not matched again. Open it from Pages and use “This page is a writing sheet”.', 'review'));
+          }
+        } catch (err) { mount(result, callout(err instanceof Error ? err.message : String(err), 'error')); }
+        file.value = '';
+      }
+
+      mount(body,
+        h('nav', { class: 'row small' }, h('a', { href: '#/sources?tab=sheets' }, '← All sheets')),
+        h('section', { class: 'panel stack sh-sheet' },
+          h('div', { class: 'row row--between' }, h('h2', { text: `Sheet ${sheet.number}` }), h('span', { class: 'xs muted', text: sheet.focus_label })),
+          h('p', { class: 'small', text: 'Write each line once, in this order, one written line for each line here. Start each on a new line; if a line does not fit, write it smaller rather than wrapping. Skip one if you like, it will be noticed. Maths: write it the way you normally would (the preview shows what is meant).' }),
+          h('ol', { class: 'sh-lines' }, sheet.lines.map((ln) => h('li', { class: 'sh-line' }, sheetLine(ln))))),
+        h('section', { class: 'panel stack' },
+          h('h3', { text: 'Written it?' }),
+          h('div', { class: 'row' }, h('label', { class: 'field field--inline' }, h('span', { text: 'Written on' }), kind), file, pickBtn),
+          result,
+          sheet.pages.length ? h('div', { class: 'stack' }, h('h4', { text: 'Pages from this sheet' }),
+            h('ul', { class: 'plain-list' }, sheet.pages.map((p) => h('li', { class: 'row row--between' },
+              h('span', { class: 'small' }, h('span', { text: p.original_filename }), h('span', { class: 'xs muted', text: ` · ${summaryText(p.summary)}` })),
+              h('a', { class: 'btn btn--sm', href: `#/check?source=${p.source_id}` }, 'Check'))))) : null));
+    } catch (err) { mount(body, errorState(err, () => showSheet(id))); }
+  }
+
+  return body;
+}
+
+/** On a page's own view: mark an already-uploaded page as a written-out sheet. @param {string} sourceId @param {() => void} done */
+export function sheetPicker(sourceId, done) {
+  const wrap = h('div', { class: 'row sh-picker' });
+  api('/api/sheets').then((data) => {
+    if (!data.sheets.length) return;
+    const sel = /** @type {HTMLSelectElement} */ (h('select', { 'aria-label': 'Which writing sheet this page is' },
+      h('option', { value: '' }, 'This page is a writing sheet…'),
+      data.sheets.map((/** @type {Sheet} */ s) => h('option', { value: s.id }, `Sheet ${s.number} (${s.focus_label})`))));
+    const go = h('button', { class: 'btn btn--sm', type: 'button', onClick: async () => {
+      if (!sel.value) return;
+      try {
+        const { job_id } = await api(`/api/sources/${sourceId}/sheet`, { body: { sheet_id: sel.value } });
+        const job = await trackJob(job_id);
+        if (job.status !== 'succeeded') throw new Error(job.error || 'failed');
+        toast(`${summaryText(job.result)}. Text filled in from the sheet.`);
+        done();
+      } catch (err) { toast(err instanceof Error ? err.message : String(err), 'error'); }
+    } }, 'Fill in from sheet');
+    mount(wrap, sel, go);
+  }).catch(() => {});
+  return wrap;
+}

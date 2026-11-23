@@ -20,6 +20,15 @@ class BatchIn(BaseModel):
     style_era: Literal["current", "older"] = "current"
     note: str | None = Field(default=None, max_length=300)
     detect: bool = True
+    sheet_id: str | None = Field(default=None, pattern=r"^sht_[0-9a-f]{16}$")  # this upload is a written-out writing sheet
+
+
+class SheetIn(BaseModel):
+    focus: Literal["mixed", "everyday", "pairs", "capitals", "maths", "chemistry", "mine"] = "mixed"
+
+
+class ApplySheetIn(BaseModel):
+    sheet_id: str = Field(pattern=r"^sht_[0-9a-f]{16}$")
 
 
 class SourcePatch(BaseModel):

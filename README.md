@@ -49,6 +49,7 @@ Copy `.env.example` to `.env`. Every setting is optional:
    - Lines and words are detected locally as editable proposals.
 2. **Correct the photo** (optional). Rotate or perspective-correct a page, with manual corner adjustment available. Regions already drawn on the page are moved to the new geometry and flagged as stale.
 3. **Recognise** (optional). Select pages and choose **Prepare recognition…**, which shows exactly which images will leave the machine. Then run `/recognise` in Claude Code inside this repository and click **Import results**.
+3b. **Writing sheets** (Sources → Writing sheets). The app picks real words and sentences covering what your notes are short of (rare letters and pairs, capitals, digits, maths and Greek, chemistry, your own words). Write one out by hand, upload it on the sheet's page, and it is labelled from the known text: no recognition. Keep sheets to about a third of the data; exports record each example's `origin` and warn above 40%.
 4. **Check** (the fast path). One card per line: the line's photo with word boxes outlined, the words read as editable chips, anything doubtful in amber. Fix a word by tapping it, clear a word to leave it out, type a space to split a word (the boxes are re-cut to match), then **Approve line** (Enter). Lines with nothing amber can be approved together.
 5. **Review** (box surgery and everything else).
    - Correct transcriptions exactly as written.

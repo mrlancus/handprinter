@@ -275,3 +275,20 @@ CREATE TABLE IF NOT EXISTS source_splits (
   assigned_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_regions_source_status ON regions(source_id, status);
+
+-- Writing sheets: text chosen by the app and written out by hand (labels known, no recognition).
+CREATE TABLE IF NOT EXISTS sheets (
+  id TEXT PRIMARY KEY,
+  number INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  focus TEXT NOT NULL,
+  seed INTEGER NOT NULL,
+  lines TEXT NOT NULL            -- JSON list of the lines to write, in order
+);
+
+CREATE TABLE IF NOT EXISTS sheet_pages (
+  source_id TEXT PRIMARY KEY REFERENCES sources(id),
+  sheet_id TEXT NOT NULL REFERENCES sheets(id),
+  applied_at TEXT NOT NULL,
+  summary TEXT NOT NULL DEFAULT '{}'
+);

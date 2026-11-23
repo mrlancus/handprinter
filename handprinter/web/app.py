@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
-from handprinter import dataset, doctor, evaluation, imaging, jobs, pages, review, studio
+from handprinter import dataset, doctor, evaluation, imaging, jobs, pages, review, sheets, studio
 from handprinter.adapters import all_adapters
 from handprinter.config import MAX_UPLOAD_BYTES, ONLINE_MAX_UPLOAD_BYTES, Settings
 from handprinter.db import connect, dumps, init_db, new_id, now_iso, row_dict, transaction
@@ -155,11 +155,31 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             job_id = jobs.enqueue(conn, "import_upload", {
                 "staged_id": staged_id, "filename": name, "batch_id": batch_id, "source_type": batch["source_type"],
                 "session": batch["session"], "captured_date": opts.get("captured_date"), "style_era": opts.get("style_era", "current"),
-                "detect": opts.get("detect", True),
+                "detect": opts.get("detect", True), "sheet_id": opts.get("sheet_id"),
             })
             return {"filename": name, "status": "queued", "job_id": job_id, "bytes": size}
         finally:
             conn.close()
+
+    # ---------- writing sheets ----------
+    @app.get("/api/sheets")
+    def list_sheets(conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return {"sheets": sheets.list_sheets(conn), "focuses": sheets.FOCUSES}
+
+    @app.post("/api/sheets")
+    def create_sheet(body: S.SheetIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        with transaction(conn):
+            return sheets.make_sheet(conn, body.focus)
+
+    @app.get("/api/sheets/{sheet_id}")
+    def get_sheet(sheet_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return sheets.get_sheet(conn, sheet_id)
+
+    @app.post("/api/sources/{source_id}/sheet")
+    def apply_sheet(source_id: str, body: S.ApplySheetIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        pages.get_source(conn, source_id)
+        sheets.get_sheet(conn, body.sheet_id)
+        return {"job_id": jobs.enqueue(conn, "apply_sheet", {"source_id": source_id, "sheet_id": body.sheet_id})}
 
     # ---------- sources ----------
     @app.get("/api/sources")

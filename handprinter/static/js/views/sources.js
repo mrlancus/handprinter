@@ -5,13 +5,14 @@ import { icon } from '../components/icons.js';
 import { callout, emptyState, errorState, flagBadge, loadingState, setupState } from '../components/states.js';
 import { jobLabel, trackJob } from '../jobs.js';
 import { toast } from '../app.js';
+import { sheetPicker, sheetsTab } from './sheets.js';
 
 const PAGE_SIZE = 48;
 
 /** @param {HTMLElement} root @param {URLSearchParams} params @param {string[]} path */
 export async function render(root, params, path) {
   if (path[0]) return renderPage(root, path[0]);
-  const tab = params.get('tab') === 'recognition' ? 'recognition' : 'pages';
+  const tab = ['recognition', 'sheets'].includes(params.get('tab') || '') ? /** @type {string} */ (params.get('tab')) : 'pages';
   /** @type {(() => void)[]} */
   const cleanups = [];
   const status = await api('/api/status');
@@ -20,8 +21,9 @@ export async function render(root, params, path) {
       h('div', {}, h('h1', { text: 'Sources' }), h('p', { class: 'muted', text: 'Photographs, scans and iPad exports. Originals are kept byte-for-byte.' }))),
     h('nav', { class: 'tabs', 'aria-label': 'Sources sections' },
       h('a', { href: '#/sources', 'aria-current': tab === 'pages' ? 'page' : undefined }, 'Pages'),
-      h('a', { href: '#/sources?tab=recognition', 'aria-current': tab === 'recognition' ? 'page' : undefined }, 'Recognition packages')),
-    tab === 'pages' ? pagesTab(status, params, cleanups) : recognitionTab(status));
+      h('a', { href: '#/sources?tab=recognition', 'aria-current': tab === 'recognition' ? 'page' : undefined }, 'Recognition packages'),
+      h('a', { href: '#/sources?tab=sheets', 'aria-current': tab === 'sheets' ? 'page' : undefined }, 'Writing sheets')),
+    tab === 'pages' ? pagesTab(status, params, cleanups) : tab === 'sheets' ? sheetsTab(params) : recognitionTab(status));
   return () => cleanups.forEach((fn) => fn());
 }
 
@@ -601,7 +603,8 @@ async function renderPage(root, sourceId) {
           toast(job.status === 'succeeded' ? `Detection: ${job.result.lines} lines, ${job.result.words} words proposed (untouched proposals replaced; edited ones kept; omitted areas ignored).` : `Detection failed: ${job.error}`, job.status === 'succeeded' ? 'info' : 'error');
           loadAnalysis();
         } }, icon('refresh'), 'Re-detect regions'),
-        h('a', { class: 'btn', href: `#/review?source=${sourceId}` }, icon('review'), 'Review this page'))),
+        h('a', { class: 'btn', href: `#/review?source=${sourceId}` }, icon('review'), 'Review this page'),
+        sheetPicker(sourceId, () => loadAnalysis()))),
     h('div', { class: 'page-body page-detail' },
       h('section', { class: 'stack' }, h('div', { class: 'row row--between' }, views, h('div', { class: 'row' }, status, omitBtn)), omitHint, stage, legend,
         h('p', { class: 'small muted', text: 'To fix a box, tap it: it opens in Review, where you drag its corners, split, merge or delete it.' })),

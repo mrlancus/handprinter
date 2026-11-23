@@ -350,3 +350,18 @@
 .an-suggest__rect { fill: rgba(194, 124, 14, 0.12); stroke: var(--c-review-strong); stroke-width: 3px; stroke-dasharray: 10 6; vector-effect: non-scaling-stroke; pointer-events: none; }
 .an-suggest-box text { pointer-events: none; }
 .an-suggest h4 { color: var(--c-review); }
+
+/* ---------- Writing sheets ---------- */
+.sh-intro { max-width: 860px; }
+.sh-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--sp-3); }
+.sh-card { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-3); text-decoration: none; color: var(--c-text); align-items: flex-start; }
+.sh-card:hover { border-color: var(--c-border-strong); }
+.sh-card__first { color: var(--c-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.sh-sheet { max-width: 960px; }
+.sh-lines { margin: 0; padding-left: 2.4em; display: grid; gap: var(--sp-3); }
+.sh-line { font-size: 1.35rem; line-height: 1.5; padding: var(--sp-2) 0; border-bottom: 1px dashed var(--c-border); }
+.sh-line::marker { color: var(--c-text-faint); font-size: var(--fs-md); }
+.sh-line__text { font-family: var(--font-display); }
+.sh-picker select { max-width: 16rem; }
+@media (pointer: coarse) { .sh-line { font-size: 1.5rem; } }
+.sh .panel { padding: var(--sp-4); }
