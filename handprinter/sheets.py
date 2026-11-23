@@ -70,7 +70,8 @@ def _have(conn: sqlite3.Connection) -> Counter:
     have: Counter = Counter()
     for (text,) in conn.execute("SELECT text FROM regions WHERE deleted = 0 AND kind = 'line' AND status = 'approved' AND text IS NOT NULL"):
         have.update(_units(text))
-    for (lines,) in conn.execute("SELECT lines FROM sheets"):
+    # Printed-pack sheets count only once a page of them has been uploaded (most may never be written).
+    for (lines,) in conn.execute("SELECT lines FROM sheets WHERE number <= ? OR id IN (SELECT sheet_id FROM sheet_pages)", (PACK_BASE,)):
         for line in json.loads(lines):
             have.update(_units(line))
     return have
@@ -108,6 +109,72 @@ def _pick(candidates: list[str], have: Counter, n: int, rng: random.Random) -> l
     return chosen
 
 
+# ---------- the printable pack: fixed sheets you can write without the app running ----------
+
+PACK_FILE = "sheet_pack.json"
+PACK_BASE = 1000  # printed sheets are numbered 1001, 1002, ... so they never clash with sheets made in the app
+
+
+def pack_id(number: int) -> str:
+    """A fixed id per printed sheet, the same on every PC (digits are valid hex)."""
+    return f"sht_{number:016d}"
+
+
+def is_pack(sheet_id: str) -> bool:
+    return sheet_id.startswith("sht_") and sheet_id[4:].isdigit() and int(sheet_id[4:]) > PACK_BASE
+
+
+def load_pack() -> list[dict[str, Any]]:
+    from importlib import resources
+
+    return json.loads(resources.files("handprinter").joinpath(PACK_FILE).read_text(encoding="utf-8"))["sheets"]
+
+
+def ensure_pack(conn: sqlite3.Connection) -> None:
+    """Make the printed sheets known to this database (idempotent; their text never changes)."""
+    have = {r[0] for r in conn.execute("SELECT id FROM sheets WHERE number > ?", (PACK_BASE,))}
+    rows = [(pack_id(s["number"]), s["number"], now_iso(), s["focus"], s["number"], json.dumps(s["lines"]))
+            for s in load_pack() if pack_id(s["number"]) not in have]
+    if rows:
+        conn.executemany("INSERT OR IGNORE INTO sheets (id, number, created_at, focus, seed, lines) VALUES (?,?,?,?,?,?)", rows)
+
+
+# Which focus each printed sheet has: mostly mixed, then a few of each subject.
+PACK_PLAN = (["mixed"] * 20 + ["maths"] * 4 + ["chemistry"] * 4 + ["physics"] * 4 + ["python"] * 4
+             + ["pairs"] * 2 + ["capitals"] * 2)
+
+
+def _one_row(line: str) -> bool:
+    """Matrices and other multi-row layouts cannot be written as one line, so a sheet cannot match them."""
+    return "\\begin{" not in line and "\\\\" not in line
+
+
+def build_pack(seed: int = 20261123) -> list[dict[str, Any]]:
+    """The printable pack, from the banks only (no database): every line appears once across the pack."""
+    rng = random.Random(seed)
+    have: Counter = Counter()
+    used: Counter = Counter()
+    out = []
+    for i, focus in enumerate(PACK_PLAN, start=1):
+        lines: list[str] = []
+        plan = {k: v for k, v in MIX.items() if k != "mine"} if focus == "mixed" else {focus: LINES_PER_SHEET}
+        if focus == "mixed":
+            plan["everyday"] += MIX["mine"]  # no notes of yours exist offline
+        for bank, k in plan.items():
+            pool = [line for line in _pool(bank, rng) if _one_row(line) and line not in lines]
+            fresh = [line for line in pool if not used[line]]
+            picked = _pick(fresh, have, k, rng)
+            if len(picked) < k:  # the bank is used up: repeat its least-written lines (a second sample helps too)
+                again = sorted((line for line in pool if line not in picked), key=lambda line: (used[line], rng.random()))
+                picked += again[:k - len(picked)]
+            lines += picked
+            for line in picked:
+                have.update(_units(line))
+        used.update(lines)
+        out.append({"number": PACK_BASE + i, "focus": focus, "focus_label": FOCUSES[focus], "lines": lines[:LINES_PER_SHEET]})
+    return out
+
+
 def make_sheet(conn: sqlite3.Connection, focus: str = "mixed", seed: int | None = None) -> dict[str, Any]:
     if focus not in FOCUSES:
         raise review.ReviewError(f"unknown sheet focus {focus!r}")
@@ -131,13 +198,15 @@ def make_sheet(conn: sqlite3.Connection, focus: str = "mixed", seed: int | None 
     else:
         lines = _pick(_pool(focus, rng), have, LINES_PER_SHEET, rng)
     sheet_id = new_id("sht")
-    number = conn.execute("SELECT COUNT(*) FROM sheets").fetchone()[0] + 1
+    number = conn.execute("SELECT COUNT(*) FROM sheets WHERE number <= ?", (PACK_BASE,)).fetchone()[0] + 1
     conn.execute("INSERT INTO sheets (id, number, created_at, focus, seed, lines) VALUES (?,?,?,?,?,?)",
                  (sheet_id, number, now_iso(), focus, seed, json.dumps(lines)))
     return get_sheet(conn, sheet_id)
 
 
 def get_sheet(conn: sqlite3.Connection, sheet_id: str) -> dict[str, Any]:
+    if is_pack(sheet_id):
+        ensure_pack(conn)
     row = conn.execute("SELECT * FROM sheets WHERE id = ?", (sheet_id,)).fetchone()
     if row is None:
         raise review.ReviewError("sheet not found")
@@ -151,7 +220,11 @@ def get_sheet(conn: sqlite3.Connection, sheet_id: str) -> dict[str, Any]:
 
 
 def list_sheets(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [get_sheet(conn, r["id"]) for r in conn.execute("SELECT id FROM sheets ORDER BY created_at DESC LIMIT 100")]
+    """Sheets made in the app, newest first, then the printed pack in number order."""
+    ensure_pack(conn)
+    made = [r["id"] for r in conn.execute("SELECT id FROM sheets WHERE number <= ? ORDER BY created_at DESC LIMIT 100", (PACK_BASE,))]
+    pack = [r["id"] for r in conn.execute("SELECT id FROM sheets WHERE number > ? ORDER BY number", (PACK_BASE,))]
+    return [{**get_sheet(conn, i), "printed": i in pack} for i in made + pack]
 
 
 # ---------- matching a written page to its sheet ----------

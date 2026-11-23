@@ -8,7 +8,7 @@ import { callout, emptyState, errorState, loadingState } from '../components/sta
 import { trackJob } from '../jobs.js';
 import { toast } from '../app.js';
 
-/** @typedef {{id: string, number: number, created_at: string, focus: string, focus_label: string, lines: string[], pages: any[]}} Sheet */
+/** @typedef {{id: string, number: number, created_at: string, focus: string, focus_label: string, lines: string[], pages: any[], printed?: boolean}} Sheet */
 
 /** One sheet line, with maths rendered so you can see exactly what to write. @param {string} text */
 function sheetLine(text) {
@@ -35,6 +35,8 @@ export function sheetsTab(params) {
     mount(body, loadingState(2));
     try {
       const data = await api('/api/sheets');
+      const made = data.sheets.filter((/** @type {Sheet} */ s) => !s.printed);
+      const printed = data.sheets.filter((/** @type {Sheet} */ s) => s.printed);
       const focus = /** @type {HTMLSelectElement} */ (h('select', { 'aria-label': 'What the sheet should practise' },
         Object.entries(data.focuses).map(([v, label]) => h('option', { value: v }, /** @type {string} */ (label)))));
       const create = h('button', { class: 'btn btn--primary', type: 'button', onClick: async () => {
@@ -50,16 +52,26 @@ export function sheetsTab(params) {
           h('p', { class: 'small', text: 'The app picks real words and sentences that cover what your notes are short of: rare letters and letter pairs, capitals, digits, maths, Greek letters and chemistry, plus words you often write. You copy them by hand; because the text is known, nothing needs reading and checking is quick.' }),
           h('p', { class: 'small muted', text: 'Write at your normal speed, the way you would in notes. Messy is fine and useful. Your notes stay the main source; sheets top up the rare things (keep them to about a third of the data).' }),
           h('div', { class: 'row' }, h('label', { class: 'field field--inline' }, h('span', { text: 'Practise' }), focus), create)),
-        data.sheets.length
-          ? h('ul', { class: 'sh-list', role: 'list' }, data.sheets.map((/** @type {Sheet} */ s) => h('li', {},
-              h('a', { class: 'sh-card panel', href: `#/sources?tab=sheets&sheet=${s.id}` },
-                h('strong', { text: `Sheet ${s.number}` }),
-                h('span', { class: 'xs muted', text: `${s.focus_label} · ${new Date(s.created_at).toLocaleDateString()}` }),
-                h('span', { class: 'small sh-card__first', text: s.lines[0] || '' }),
-                s.pages.length ? h('span', { class: 'badge badge--ok' }, icon('check'), `${s.pages.length} page${s.pages.length === 1 ? '' : 's'} uploaded`)
-                  : h('span', { class: 'badge', text: 'Not written yet' })))))
-          : emptyState({ title: 'No sheets yet', icon: 'draw', body: 'Make one above, write it out on your iPad or paper, then upload it on the sheet’s page.' }));
+        made.length
+          ? cards(made, true)
+          : emptyState({ title: 'No sheets made here yet', icon: 'draw', body: 'Make one above, or use the printed pack below.' }),
+        h('section', { class: 'panel sh-intro stack' },
+          h('div', { class: 'row row--between' }, h('h2', { text: `Printed pack (${printed.length} sheets)` }),
+            h('a', { class: 'btn', href: '/static/sheets/writing-sheets-pack-1.pdf', download: 'handprinter-writing-sheets-pack-1.pdf' }, icon('download'), 'Download PDF')),
+          h('p', { class: 'small', text: 'Fixed sheets numbered from 1001, for writing when the app is not running. Print them or open the PDF on the iPad, copy the lines onto your own paper, and upload the photos here later on the sheet with the same number. Their text never changes, so old pages still match.' })),
+        cards(printed, false));
     } catch (err) { mount(body, errorState(err, showList)); }
+  }
+
+  /** @param {Sheet[]} list @param {boolean} dated @returns {HTMLElement} */
+  function cards(list, dated) {
+    return h('ul', { class: 'sh-list', role: 'list' }, list.map((s) => h('li', {},
+      h('a', { class: 'sh-card panel', href: `#/sources?tab=sheets&sheet=${s.id}` },
+        h('strong', { text: `Sheet ${s.number}` }),
+        h('span', { class: 'xs muted', text: dated ? `${s.focus_label} · ${new Date(s.created_at).toLocaleDateString()}` : s.focus_label }),
+        h('span', { class: 'small sh-card__first', text: s.lines[0] || '' }),
+        s.pages.length ? h('span', { class: 'badge badge--ok' }, icon('check'), `${s.pages.length} page${s.pages.length === 1 ? '' : 's'} uploaded`)
+          : h('span', { class: 'badge', text: 'Not written yet' })))));
   }
 
   /** @param {string} id */
@@ -126,7 +138,8 @@ export function sheetPicker(sourceId, done) {
     if (!data.sheets.length) return;
     const sel = /** @type {HTMLSelectElement} */ (h('select', { 'aria-label': 'Which writing sheet this page is' },
       h('option', { value: '' }, 'This page is a writing sheet…'),
-      data.sheets.map((/** @type {Sheet} */ s) => h('option', { value: s.id }, `Sheet ${s.number} (${s.focus_label})`))));
+      h('optgroup', { label: 'Made in the app' }, data.sheets.filter((/** @type {Sheet} */ s) => !s.printed).map((/** @type {Sheet} */ s) => h('option', { value: s.id }, `Sheet ${s.number} (${s.focus_label})`))),
+      h('optgroup', { label: 'Printed pack' }, data.sheets.filter((/** @type {Sheet} */ s) => s.printed).map((/** @type {Sheet} */ s) => h('option', { value: s.id }, `Sheet ${s.number} (${s.focus_label})`)))));
     const go = h('button', { class: 'btn btn--sm', type: 'button', onClick: async () => {
       if (!sel.value) return;
       try {

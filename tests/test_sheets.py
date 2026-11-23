@@ -83,3 +83,37 @@ def test_every_focus_fills_a_sheet_and_maths_is_well_formed(conn):
         for line in sh["lines"]:
             assert line.count("$") % 2 == 0, line  # every maths span is closed
     assert any("def " in ln or "for " in ln or "import" in ln for ln in sheets.make_sheet(conn, "python", seed=2)["lines"])
+
+
+# ---------- printed pack (written while the app is off, uploaded later) ----------
+
+def test_printed_pack_is_fixed_complete_and_writable_on_one_line():
+    pack = sheets.load_pack()
+    assert [s["number"] for s in pack] == list(range(1001, 1001 + len(pack)))
+    for s in pack:
+        assert len(s["lines"]) == sheets.LINES_PER_SHEET and s["focus"] in sheets.FOCUSES
+        assert all(line.count("$") % 2 == 0 and sheets._one_row(line) for line in s["lines"])
+    assert sheets.pack_id(1007) == "sht_0000000000001007" and sheets.is_pack("sht_0000000000001007")
+    assert not sheets.is_pack(new_id("sht"))
+
+
+def test_pack_is_installed_once_and_does_not_disturb_app_sheets(conn):
+    listed = sheets.list_sheets(conn)
+    sheets.ensure_pack(conn)
+    assert not sheets._have(conn)  # unwritten printed sheets do not count as already practised
+    assert conn.execute("SELECT COUNT(*) FROM sheets").fetchone()[0] == len(sheets.load_pack())
+    assert all(s["printed"] for s in listed)
+    made = sheets.make_sheet(conn, "everyday")
+    assert made["number"] == 1  # numbering of sheets made in the app ignores the pack
+    listed = sheets.list_sheets(conn)
+    assert listed[0]["id"] == made["id"] and not listed[0]["printed"] and listed[1]["number"] == 1001
+
+
+
+def test_a_page_of_a_printed_sheet_is_labelled_from_it(conn, store, import_bytes):
+    sheet = sheets.get_sheet(conn, sheets.pack_id(1037))  # installs the pack on first use
+    written = sheet["lines"][:5]
+    src = import_bytes(encode(page(written, ruling=False)))[0].source_ids[0]
+    out = sheets.apply_sheet(conn, store, src, sheet["id"])
+    texts, _ = _texts(conn, src)
+    assert texts == written and out["matched"] == 5
