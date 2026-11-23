@@ -9,6 +9,7 @@ import { startJobTray } from './jobs.js';
 
 const NAV = [
   { id: 'sources', label: 'Sources', icon: 'sources' },
+  { id: 'check', label: 'Check', icon: 'check' },
   { id: 'review', label: 'Review', icon: 'review' },
   { id: 'dataset', label: 'Dataset', icon: 'dataset' },
   { id: 'experiments', label: 'Experiments', icon: 'experiments' },
@@ -19,6 +20,7 @@ const NAV = [
 /** @type {Record<string, () => Promise<View>>} */
 const VIEWS = {
   sources: () => import('./views/sources.js'),
+  check: () => import('./views/check.js'),
   review: () => import('./views/review.js'),
   dataset: () => import('./views/dataset.js'),
   experiments: () => import('./views/experiments.js'),

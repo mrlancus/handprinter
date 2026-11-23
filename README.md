@@ -8,6 +8,10 @@ Everything runs and is stored on your computer. The only exception is images you
 - **Requirements:** see [docs/build-brief.md](docs/build-brief.md).
 - **Architecture:** see [docs/architecture.md](docs/architecture.md).
 
+## Use it from an iPad or phone
+
+Double-click `Handprinter.bat`: it updates the code, installs anything missing and starts the app online. Or run `scripts\online.bat` instead of `run.bat`: it publishes the app through a free Cloudflare Tunnel behind a password. Step by step: [docs/online.md](docs/online.md).
+
 ## Quick start
 
 You need Python 3.11 or newer. A GPU, Claude Code and model weights are all optional.
@@ -45,15 +49,17 @@ Copy `.env.example` to `.env`. Every setting is optional:
    - Lines and words are detected locally as editable proposals.
 2. **Correct the photo** (optional). Rotate or perspective-correct a page, with manual corner adjustment available. Regions already drawn on the page are moved to the new geometry and flagged as stale.
 3. **Recognise** (optional). Select pages and choose **Prepare recognition…**, which shows exactly which images will leave the machine. Then run `/recognise` in Claude Code inside this repository and click **Import results**.
-4. **Review.**
+3b. **Writing sheets** (Sources → Writing sheets). The app picks real words and sentences covering what your notes are short of (rare letters and pairs, capitals, digits, maths and Greek, chemistry, your own words). Write one out by hand, upload it on the sheet's page, and it is labelled from the known text: no recognition. Keep sheets to about a third of the data; exports record each example's `origin` and warn above 40%.
+4. **Check** (the fast path). One card per line: the line's photo with word boxes outlined, the words read as editable chips, anything doubtful in amber. Fix a word by tapping it, clear a word to leave it out, type a space to split a word (the boxes are re-cut to match), then **Approve line** (Enter). Lines with nothing amber can be approved together.
+5. **Review** (box surgery and everything else).
    - Correct transcriptions exactly as written.
    - Adjust, split and merge boxes, classify regions and link marks.
    - Mark someone else's handwriting.
    - Approve, exclude or defer each region.
    - Press `?` for keyboard shortcuts.
-5. **Dataset.** Export an immutable snapshot of PNG crops plus `words.jsonl` and `lines.jsonl`, split by page group, with an unseen-word test subset.
-6. **Experiments.** Check adapter status, run baselines on a fixed prompt set, rate outputs blind A/B, and generate.
-7. **Studio.** Place generated or imported images on a page in millimetres and export a PNG at an explicit dpi. No model is needed for this.
+6. **Dataset.** Export an immutable snapshot of PNG crops plus `words.jsonl` and `lines.jsonl`, split by page group, with an unseen-word test subset.
+7. **Experiments.** Check adapter status, run baselines on a fixed prompt set, rate outputs blind A/B, and generate.
+8. **Studio.** Place generated or imported images on a page in millimetres and export a PNG at an explicit dpi. No model is needed for this.
 
 ## Recognition through Claude Code
 

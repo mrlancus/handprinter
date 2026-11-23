@@ -96,7 +96,8 @@ def decode_image(data: bytes, kind: str) -> Decoded:
     return Decoded(image=_to_rgb(img), orientation=orientation)
 
 
-def render_pdf(data: bytes, max_pages: int, dpi: int = 200) -> Iterator[Decoded]:
+def render_pdf(data: bytes, max_pages: int, dpi: int = 200, only: frozenset[int] | None = None,
+               skip: frozenset[int] = frozenset()) -> Iterator[Decoded]:
     """Render pages one at a time, so a long PDF never sits in memory as images all at once."""
     if not pdf_available():
         raise UnsupportedInput("PDF pages need the optional renderer: pip install -e \".[pdf]\"")
@@ -110,6 +111,8 @@ def render_pdf(data: bytes, max_pages: int, dpi: int = 200) -> Iterator[Decoded]
         if len(doc) > max_pages:
             raise UnsupportedInput(f"PDF has {len(doc)} pages (limit {max_pages})")
         for index in range(len(doc)):
+            if (only is not None and index not in only) or index in skip:
+                continue
             page = doc[index]
             pw, ph = page.get_size()
             scale = dpi / 72

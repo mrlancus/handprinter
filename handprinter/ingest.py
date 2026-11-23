@@ -37,6 +37,23 @@ class BatchInfo:
     session: str | None = None
     captured_date: str | None = None
     style_era: str = "current"
+    pages: frozenset[int] | None = None  # PDF pages to import (0-based); None = all
+
+
+def parse_pages(spec: str | None) -> frozenset[int] | None:
+    """'1-7, 9' -> {0..6, 8} (pages are numbered from 1 for people, from 0 inside)."""
+    if not spec or not spec.strip():
+        return None
+    out: set[int] = set()
+    for part in spec.replace(" ", "").split(","):
+        if not part:
+            continue
+        a, _, b = part.partition("-")
+        lo, hi = int(a), int(b) if b else int(a)
+        if lo < 1 or hi < lo or hi > MAX_PDF_PAGES:
+            raise ValueError(f"page range {part!r} is not valid")
+        out.update(range(lo - 1, hi))
+    return frozenset(out) or None
 
 
 class ArchiveError(ValueError):
@@ -168,11 +185,15 @@ def _import_bytes(
     label = f"{container}/{name}" if container else name
     name = PurePosixPath(name).name
     digest = sha256_bytes(data)
-    existing = conn.execute("SELECT id FROM sources WHERE sha256 = ? AND deleted = 0 LIMIT 1", (digest,)).fetchone()
-    if existing:
-        return EntryResult(label, "duplicate", f"identical bytes already imported as {existing['id']}", [existing["id"]])
+    wanted = batch.pages if kind == "pdf" else None
+    done_pages = {r["page_index"]: r["id"] for r in conn.execute(
+        "SELECT id, page_index FROM sources WHERE sha256 = ? AND deleted = 0", (digest,))}
+    if done_pages and (kind != "pdf" or (wanted is not None and wanted <= set(done_pages))):
+        first = done_pages[min(done_pages)] if wanted is None else done_pages[min(wanted)]
+        return EntryResult(label, "duplicate", f"identical bytes already imported as {first}", [first])
+    # The same PDF again (other pages chosen, or all): only pages not imported before are added.
     try:
-        pages = imaging.render_pdf(data, MAX_PDF_PAGES) if kind == "pdf" else iter([imaging.decode_image(data, kind)])
+        pages = imaging.render_pdf(data, MAX_PDF_PAGES, only=wanted, skip=frozenset(done_pages)) if kind == "pdf" else iter([imaging.decode_image(data, kind)])
     except imaging.UnsupportedInput as exc:
         return EntryResult(label, "rejected", str(exc))
     group_id = new_id("grp")
@@ -187,10 +208,16 @@ def _import_bytes(
             if not ids:
                 return EntryResult(label, "rejected", str(exc))
             return EntryResult(label, "imported", f"{len(ids)} page(s) imported, then stopped: {exc}", ids)
+        if page.page_index in done_pages and kind == "pdf":
+            continue
         source_id = new_id("src")
         if original_written is None:
-            original_written = store.original(source_id, imaging.EXT[kind])
-            atomic_write(original_written, data)
+            earlier = conn.execute("SELECT original_path FROM sources WHERE sha256 = ? AND deleted = 0 LIMIT 1", (digest,)).fetchone()
+            if earlier:  # pages of this PDF imported before: share its stored original
+                original_written = store.resolve_relative(earlier["original_path"])
+            else:
+                original_written = store.original(source_id, imaging.EXT[kind])
+                atomic_write(original_written, data)
         working = imaging.orient(page)
         atomic_write(store.working(source_id), imaging.png_bytes(working))
         imaging.save_preview(working, store.preview(source_id, 0, "thumb"), imaging.THUMB_EDGE)
@@ -219,7 +246,14 @@ def _import_bytes(
                 linked = sorted(set(_loads_list(row["near_duplicates"])) | {source_id})
                 conn.execute("UPDATE sources SET near_duplicates = ? WHERE id = ?", (dumps(linked), other))
         ids.append(source_id)
+    if not ids:
+        if done_pages and (wanted is None or wanted <= set(done_pages)):
+            first = done_pages[min(done_pages)]
+            return EntryResult(label, "duplicate", f"every page was already imported (first is {first})", [first])
+        return EntryResult(label, "rejected", "none of the chosen pages are in this PDF")
     detail = f"{len(ids)} page(s)" if kind == "pdf" else ""
+    if kind == "pdf" and done_pages:
+        detail += f"; {len(done_pages)} page(s) of this PDF were already imported and were skipped"
     near_any = conn.execute(
         f"SELECT COUNT(*) FROM sources WHERE id IN ({','.join('?' * len(ids))}) AND near_duplicates != '[]'", ids
     ).fetchone()[0]

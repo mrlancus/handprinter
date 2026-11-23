@@ -1,6 +1,6 @@
 # Status (hand-off)
 
-Last updated: 2026-11-22, end of the first build session (branch `claude/blissful-shannon-mu38kt`).
+Last updated: 2026-11-22, second change set: page analysis, omitted areas, LaTeX maths (branch `claude/blissful-shannon-mu38kt`).
 
 Legend:
 - **implemented**: the code exists and runs.
@@ -32,10 +32,14 @@ Nothing has been verified with your real handwriting.
 | Durable jobs, cancel, retry, restart recovery | fixtures | `tests/test_jobs.py`. |
 | Security: loopback, Host/Origin checks, request token, LAN sign-in | fixtures | `tests/test_api_e2e.py`. |
 | Studio: assets, canvas layout in mm, flow, undo/redo, save/open, PNG export at a set dpi | fixtures | The export size check is 100×50 mm at 254 dpi = 1000×500 px. |
-| Eruku adapter | **blocked** | Needs a separate PyTorch environment and about 3 GB of weights. The runner uses only the model-card API. Next step: create the environment and set `HANDPRINTER_ERUKU_PYTHON`, then download and preflight from Experiments. |
-| DiffusionPen adapter | **blocked** | Upstream has no documented entry point for sampling custom words with your own style images. Next step: clone the repo locally and write and verify a sampling driver against the real code. |
-| Fine-tuning either model | **blocked** | Neither upstream project documents an own-writer fine-tune command. Details are in `docs/model-experiments.md`. |
+| Eruku adapter | implemented, **not run** | Needs about 3 GB of weights; `SetupModels.bat` creates its environment. It was not run in the build container because loading it executes code from Hugging Face. The first run will be on your PC. |
+| DiffusionPen adapter | **verified on CPU with real weights** | The driver was written against upstream commit 059e2f2. It generates words from 5 of your crops (about 2.6 s per word on a 4-core CPU). The weight download is pinned to exact revisions and was tested. GPU speed and memory are not measured yet. |
+| Fine-tuning DiffusionPen on your words | **verified on CPU (30 steps)** | Experiments → Fine-tune. It uses training-split words only, keeps the text encoder frozen, and saves a checkpoint that you then choose under Weights. Real-length runs on the 2060 are not measured yet. Eruku fine-tuning is not offered. |
 | Blind A/B, run log, style profiles | implemented, fixtures for the API | Needs real generations from two adapters before it can be used. |
+| Page analysis ("What it found") and omitted areas | fixtures, browser-checked | `tests/test_omit.py`: exclusion and exact restore, detection ignores omitted ink, recognition images blanked, export excludes. Checked in Chromium at 1440 and 390 px. |
+| Maths as LaTeX (recognise, review, export, Studio) | fixtures, browser-checked | `tests/test_maths.py`. Prompt v2 asks Haiku for LaTeX; **not yet tried live on real handwritten maths.** MathJax renders under the strict CSP (its inline stylesheet is refused, harmlessly). Studio maths is typeset, not handwritten. |
+| Online mode (Cloudflare Tunnel + password) | fixtures, browser-checked locally | `tests/test_online.py`: tunnel traffic from loopback must sign in, default password 6892, cookie flags, per-visitor and global guess limits, no CDN caching, request token still needed, tunnel address parsing with a stand-in cloudflared. **A real Cloudflare tunnel was not run** (this build environment may not publish itself to the internet); first real run will be on your PC. |
+| iPad / phone touch support | browser-checked (Chromium iPad Pro 11 portrait + landscape, iPhone 13 emulation) | Pinch zoom and tap select verified with touch events; no sideways scrolling on any screen. **Not tested in real Safari/WebKit**; please report anything odd on the iPad. Add to Home Screen supported. |
 | Performance budgets | measured in the container | See `docs/performance.md` (10k regions). Re-measure on your desktop. |
 
 ## Live recognition run
@@ -74,12 +78,11 @@ All reviews were done by Sonnet subagents.
 1. On your PC, run `python -m handprinter doctor` and share the GPU and VRAM line.
 2. Import 5–10 real pages, check that detection is usable, and tune `NEAR_DUPLICATE_*` if needed.
 3. Run `/recognise` in a fresh Claude Code session on a small package, then review the results.
-4. Set up the Eruku environment, then download, preflight and run the baseline.
-5. For DiffusionPen, write a sampling driver against the cloned repo.
+4. Run `SetupModels.bat`, then in Experiments: Download weights, then Run memory preflight, then baseline, then Fine-tune (see `docs/model-experiments.md`, "Plan").
 
 ## Pull request
 
-Opened as https://github.com/mrlancus/handprinter/pull/1 (not merged). Short summary:
+https://github.com/mrlancus/handprinter/pull/1 was merged to `main` at the user's request. Short summary:
 
 > **Handprinter: local handwriting dataset and generation studio (first build)**
 >

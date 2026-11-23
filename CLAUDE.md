@@ -14,6 +14,7 @@ Full requirements: [docs/build-brief.md](docs/build-brief.md). Hand-off state: [
 - Heavy work runs in the worker process, never in the web process.
 - Personal data, DBs, weights, packages, outputs and logs stay out of Git (data dir is outside the repo).
 - The app must work without GPU, Claude Code, real handwriting or model weights.
+- Online mode (Cloudflare Tunnel) trusts no client by address: every request needs the password session. Never add a loopback bypass there.
 
 ## Architecture (see [docs/architecture.md](docs/architecture.md))
 
@@ -26,11 +27,12 @@ Frontend: browser-native ES modules + JSDoc, checked by `tsc --checkJs` (dev onl
 | Path | Contents |
 | --- | --- |
 | `handprinter/` | Python package: `config`, `db`, `geometry`, `ingest`, `preprocess`, `detect`, `review`, `recognition/`, `dataset`, `jobs`, `worker`, `adapters/`, `evaluation`, `studio`, `doctor`, `web/` |
-| `handprinter/static/` | Frontend: `index.html`, `css/tokens.css` (design tokens), `css/*.css`, `js/*.js` |
-| `prompts/recognition/` | Versioned recognition prompts (`v1.md`) |
+| `handprinter/static/` | Frontend: `index.html`, `css/tokens.css` (design tokens), `css/*.css`, `js/*.js`, `vendor/mathjax/` (vendored, local LaTeX rendering) |
+| `prompts/recognition/` | Versioned recognition prompts (`v1.md`; `v2.md` adds LaTeX maths; current `v3.md` fades context so only the target line is read) |
 | `.claude/agents/`, `.claude/skills/` | Haiku recogniser subagent and `/recognise` skill |
 | `tests/` | pytest suite + fixture generators (non-personal, synthetic) |
-| `scripts/` | Launchers, screenshot harness |
+| `scripts/` | Launchers (`setup_models.ps1` via `SetupModels.bat` sets up the model environment), screenshot harness |
+| `relay/` | Optional Cloudflare Worker giving online mode a fixed free workers.dev address (`worker.js`, tests: `node --test relay/worker.test.mjs`) |
 | `docs/` | Architecture, status, design system, model research, screenshots |
 
 ## Data layout
@@ -47,7 +49,7 @@ Warm UI usable 2 s; review action acknowledged 100 ms; pan/zoom 60 fps; 10k exam
 
 ## Testing policy
 
-Spec-based, few tests on risky logic (archive safety, transforms, state transitions, human-edit preservation, split leakage, export integrity, recognition import, job recovery). Expected values come from the spec, not current output. Run `pytest -q` and `npx tsc -p .` after changes.
+Spec-based, few tests on risky logic (archive safety, transforms, state transitions, human-edit preservation, split leakage, export integrity, recognition import, job recovery). Expected values come from the spec, not current output. Run `pytest -q` and `npx tsc -p .` after changes (and `node --test relay/worker.test.mjs` if `relay/` changed).
 
 ## Setup
 
@@ -56,8 +58,9 @@ python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"            # optional extras: ".[heic,pdf]"
 python -m handprinter doctor
 python -m handprinter run          # http://127.0.0.1:8765
+python -m handprinter online       # same + Cloudflare Tunnel + password (docs/online.md)
 ```
 
 ## Current status
 
-Core release implemented and fixture-verified; live Haiku recognition verified once on a fixture page; model adapters blocked on GPU environment/weights. Details and next steps: [docs/status.md](docs/status.md). Performance: [docs/performance.md](docs/performance.md).
+Core release implemented and fixture-verified; live Haiku recognition verified once on a fixture page; DiffusionPen generation + fine-tuning verified on CPU with real weights (GPU not yet measured); Eruku implemented, not run. Details and next steps: [docs/status.md](docs/status.md). Performance: [docs/performance.md](docs/performance.md).

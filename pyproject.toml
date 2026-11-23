@@ -29,7 +29,7 @@ handprinter = "handprinter.cli:main"
 include = ["handprinter*"]
 
 [tool.setuptools.package-data]
-handprinter = ["static/**/*", "recognition/*.json", "schema.sql"]
+handprinter = ["static/**/*", "recognition/*.json", "schema.sql", "sheet_pack.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

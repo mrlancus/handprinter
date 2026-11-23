@@ -12,20 +12,20 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
-from handprinter import dataset, doctor, evaluation, imaging, jobs, pages, review, studio
+from handprinter import dataset, doctor, evaluation, imaging, ingest, jobs, pages, review, sheets, studio
 from handprinter.adapters import all_adapters
-from handprinter.config import MAX_UPLOAD_BYTES, Settings
+from handprinter.config import MAX_UPLOAD_BYTES, ONLINE_MAX_UPLOAD_BYTES, Settings
 from handprinter.db import connect, dumps, init_db, new_id, now_iso, row_dict, transaction
 from handprinter.geometry import Box
 from handprinter.recognition import package as recpkg
 from handprinter.storage import Store, check_id
 from handprinter.web import schemas as S
-from handprinter.web.security import SESSION_COOKIE, make_guard, session_value
+from handprinter.web.security import SESSION_COOKIE, SESSION_MAX_AGE, LoginLimiter, client_key, is_https, make_guard, session_value
 
 STATIC_DIR = Path(str(resources.files("handprinter").joinpath("static")))
 REGION_JSON = review.JSON_FIELDS
@@ -73,12 +73,30 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def login_page() -> HTMLResponse:
         return HTMLResponse((STATIC_DIR / "login.html").read_text(encoding="utf-8"))
 
+    limiter = LoginLimiter()
+
     @app.post("/api/login")
-    def login(body: S.LoginIn) -> JSONResponse:
-        if not settings.lan_mode or not secrets.compare_digest(body.token, settings.access_token):
-            raise HTTPException(403, "invalid access token")
+    def login(body: S.LoginIn, request: Request) -> JSONResponse:
+        if not settings.login_required:
+            raise HTTPException(403, "sign-in is not used on this computer")
+        who = client_key(request, settings.relay_secret)
+        wait = limiter.retry_after(who)
+        if wait:
+            minutes = max(1, round(wait / 60))
+            return JSONResponse({"detail": f"Too many wrong attempts. Try again in about {minutes} minute{'s' if minutes != 1 else ''}."},
+                                status_code=429, headers={"retry-after": str(wait)})
+        if not secrets.compare_digest(body.token.encode(), settings.secret.encode()):
+            limiter.failed(who)
+            raise HTTPException(403, "wrong password")
         resp = JSONResponse({"ok": True})
-        resp.set_cookie(SESSION_COOKIE, session_value(settings.access_token), httponly=True, samesite="strict")
+        resp.set_cookie(SESSION_COOKIE, session_value(settings.secret), httponly=True, samesite="lax",
+                        secure=is_https(request), max_age=SESSION_MAX_AGE, path="/")
+        return resp
+
+    @app.post("/api/logout")
+    def logout() -> JSONResponse:
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
 
     @app.get("/api/status")
@@ -89,12 +107,14 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             "data_dir": str(settings.data_dir),
             "decoders": {"heic": imaging.heif_available(), "pdf": imaging.pdf_available()},
             "lan_mode": settings.lan_mode,
+            "online": settings.online,
+            "login_required": settings.login_required,
             "counts": {
                 "sources": conn.execute("SELECT COUNT(*) FROM sources WHERE deleted = 0").fetchone()[0],
                 "needs_review": conn.execute("SELECT COUNT(*) FROM regions WHERE deleted = 0 AND status = 'needs_review'").fetchone()[0],
                 "active_jobs": conn.execute("SELECT COUNT(*) FROM jobs WHERE status IN ('queued','running')").fetchone()[0],
             },
-            "limits": {"max_upload_bytes": MAX_UPLOAD_BYTES},
+            "limits": {"max_upload_bytes": ONLINE_MAX_UPLOAD_BYTES if settings.online else MAX_UPLOAD_BYTES},
         }
 
     @app.get("/api/doctor")
@@ -106,6 +126,12 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     # ---------- import ----------
     @app.post("/api/batches")
     def create_batch(body: S.BatchIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        try:
+            ingest.parse_pages(body.pages)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if body.sheet_start is not None and sheets.sheet_by_number(conn, body.sheet_start) is None:
+            raise HTTPException(422, f"there is no writing sheet {body.sheet_start}")
         batch_id = new_id("bat")
         conn.execute("INSERT INTO batches (id, created_at, note, source_type, session, results) VALUES (?,?,?,?,?,?)",
                      (batch_id, now_iso(), body.note, body.source_type, body.session, dumps(body.model_dump())))
@@ -135,11 +161,32 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             job_id = jobs.enqueue(conn, "import_upload", {
                 "staged_id": staged_id, "filename": name, "batch_id": batch_id, "source_type": batch["source_type"],
                 "session": batch["session"], "captured_date": opts.get("captured_date"), "style_era": opts.get("style_era", "current"),
-                "detect": opts.get("detect", True),
+                "detect": opts.get("detect", True), "sheet_id": opts.get("sheet_id"),
+                "pages": opts.get("pages"), "sheet_start": opts.get("sheet_start"),
             })
             return {"filename": name, "status": "queued", "job_id": job_id, "bytes": size}
         finally:
             conn.close()
+
+    # ---------- writing sheets ----------
+    @app.get("/api/sheets")
+    def list_sheets(conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return {"sheets": sheets.list_sheets(conn), "focuses": sheets.FOCUSES}
+
+    @app.post("/api/sheets")
+    def create_sheet(body: S.SheetIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        with transaction(conn):
+            return sheets.make_sheet(conn, body.focus)
+
+    @app.get("/api/sheets/{sheet_id}")
+    def get_sheet(sheet_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return sheets.get_sheet(conn, sheet_id)
+
+    @app.post("/api/sources/{source_id}/sheet")
+    def apply_sheet(source_id: str, body: S.ApplySheetIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        pages.get_source(conn, source_id)
+        sheets.get_sheet(conn, body.sheet_id)
+        return {"job_id": jobs.enqueue(conn, "apply_sheet", {"source_id": source_id, "sheet_id": body.sheet_id})}
 
     # ---------- sources ----------
     @app.get("/api/sources")
@@ -173,6 +220,11 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def get_source(source_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         src = pages.get_source(conn, source_id)
         src["image_url"] = f"/api/sources/{source_id}/image?variant=display&rev={src['processing_rev']}"
+        # Neighbours in the Sources grid order (newest first), for stepping through pages one by one.
+        c, i = src["created_at"], source_id
+        newer = conn.execute("SELECT id FROM sources WHERE deleted = 0 AND (created_at > ? OR (created_at = ? AND id < ?)) ORDER BY created_at, id DESC LIMIT 1", (c, c, i)).fetchone()
+        older = conn.execute("SELECT id FROM sources WHERE deleted = 0 AND (created_at < ? OR (created_at = ? AND id > ?)) ORDER BY created_at DESC, id LIMIT 1", (c, c, i)).fetchone()
+        src["prev_id"], src["next_id"] = (newer[0] if newer else None), (older[0] if older else None)
         src["siblings"] = [r[0] for r in conn.execute("SELECT id FROM sources WHERE group_id = ? AND id != ? AND deleted = 0", (src["group_id"], source_id))]
         src["proposals"] = [row_dict(r, ("payload",)) for r in conn.execute(
             "SELECT id, model_reported, prompt_version, payload, created_at, stale FROM proposals WHERE source_id = ? AND region_id IS NULL ORDER BY created_at DESC LIMIT 5", (source_id,))]
@@ -230,6 +282,31 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def detect(source_id: str, body: S.DetectIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         pages.get_source(conn, source_id)
         return {"job_id": jobs.enqueue(conn, "detect", {"source_id": source_id, "replace": body.replace})}
+
+    @app.get("/api/sources/{source_id}/analysis")
+    def source_analysis(source_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return pages.analysis(conn, source_id)
+
+    @app.post("/api/sources/{source_id}/omit")
+    def omit_area(source_id: str, body: S.OmitIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        box = Box(**body.box.model_dump())
+        out = pages.omit_area(conn, source_id, box, body.reason, body.processing_rev)
+        if body.same_size_pages:
+            out["other_pages"] = pages.omit_on_same_size_pages(conn, source_id, box, body.reason)
+        return out
+
+    @app.post("/api/sources/{source_id}/suggestions/{region_id}/accept")
+    def accept_suggestion(source_id: str, region_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return pages.accept_suggestion(conn, source_id, region_id)
+
+    @app.post("/api/sources/{source_id}/suggestions/{region_id}/dismiss")
+    def dismiss_suggestion(source_id: str, region_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        pages.dismiss_suggestion(conn, source_id, region_id)
+        return {"ok": True}
+
+    @app.delete("/api/sources/{source_id}/omit/{area_id}")
+    def restore_area(source_id: str, area_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return pages.restore_area(conn, source_id, area_id)
 
     @app.delete("/api/sources/{source_id}")
     def delete_source(source_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
@@ -304,12 +381,54 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             changes["box"] = body.box.model_dump()
         return review.human_edit(conn, region_id, changes, body.expected_revision, body.reason, body.processing_rev)
 
+    # ---------- quick check: a line at a time ----------
+    @app.get("/api/check")
+    def check(source_id: str | None = None, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        open_marks = ",".join("?" * len(review.OPEN))
+        pages_open = [dict(r) for r in conn.execute(
+            f"""SELECT s.id, s.original_filename, COUNT(*) AS open_lines,
+                       SUM(r.text IS NOT NULL) AS read_lines
+                FROM regions r JOIN sources s ON s.id = r.source_id
+                WHERE r.deleted = 0 AND s.deleted = 0 AND r.kind = 'line' AND r.cls IN ('handwriting', 'uncertain', 'equation')
+                  AND r.status IN ({open_marks})
+                GROUP BY s.id ORDER BY s.created_at, s.id""", review.OPEN)]
+        if source_id is None and pages_open:
+            source_id = next((p["id"] for p in pages_open if p["read_lines"]), pages_open[0]["id"])
+        if source_id is None:
+            return {"pages": [], "source": None, "lines": []}
+        src = pages.get_source(conn, source_id)
+        return {"pages": pages_open, "source": {"id": src["id"], "name": src["original_filename"], "processing_rev": src["processing_rev"]},
+                "lines": review.check_lines(conn, source_id)}
+
+    @app.post("/api/check/approve-clear")
+    def approve_clear(body: S.ApproveClearIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        if body.source_id:
+            pages.get_source(conn, body.source_id)
+        return review.approve_clear_words(conn, body.source_id)
+
+    @app.post("/api/lines/{line_id}/approve")
+    def approve_line(line_id: str, body: S.ApproveLineIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return review.approve_line(conn, line_id, body.words, body.text, body.expected_revision)
+
+    @app.post("/api/lines/{line_id}/recut")
+    def recut_line(line_id: str, body: S.RecutLineIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        review.get_region(conn, line_id)
+        return {"job_id": jobs.enqueue(conn, "recut_line", {"line_id": line_id, "text": body.text})}
+
+    @app.post("/api/lines/{line_id}/exclude")
+    def exclude_line(line_id: str, body: S.ExcludeLineIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return review.exclude_line(conn, line_id, body.reason)
+
     @app.post("/api/regions/{region_id}/undo")
     def undo(region_id: str, body: S.RevisionIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         return review.undo(conn, region_id, body.expected_revision)
 
     @app.post("/api/regions/{region_id}/split")
     def split(region_id: str, body: S.SplitIn, conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
+        if (body.at_x is None) == (body.at_y is None):
+            raise review.ReviewError("give either at_x (side by side) or at_y (top and bottom)")
+        if body.at_y is not None:
+            return review.split_region_rows(conn, region_id, body.at_y)
         return review.split_region(conn, region_id, body.at_x, body.texts)
 
     @app.post("/api/regions/merge")
@@ -361,18 +480,20 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
 
     @app.get("/api/recognition/packages")
     def list_packages(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
-        return [dict(r) for r in conn.execute(
+        rows = [dict(r) for r in conn.execute(
             """SELECT p.*, SUM(i.status = 'pending') AS pending, SUM(i.status = 'failed') AS failed, SUM(i.status = 'succeeded') AS succeeded
                FROM recognition_packages p LEFT JOIN recognition_items i ON i.package_id = p.id
                GROUP BY p.id ORDER BY p.created_at DESC LIMIT 50""")]
+        for r in rows:
+            r["ready_to_import"] = recpkg.results_waiting(store, conn, r["id"]) if (r["pending"] or r["failed"]) else 0
+        return rows
 
     @app.get("/api/recognition/packages/{package_id}")
     def get_package(package_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         pkg = conn.execute("SELECT * FROM recognition_packages WHERE id = ?", (package_id,)).fetchone()
         if pkg is None:
             raise HTTPException(404, "package not found")
-        items = [dict(r) for r in conn.execute("SELECT * FROM recognition_items WHERE package_id = ? ORDER BY item_id", (package_id,))]
-        return {**dict(pkg), "items": items, "path": str(recpkg.package_dir(store, package_id))}
+        return {**dict(pkg), "items": recpkg.item_readings(conn, package_id), "path": str(recpkg.package_dir(store, package_id))}
 
     @app.post("/api/recognition/packages/{package_id}/import")
     def import_package(package_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
@@ -444,6 +565,30 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             raise HTTPException(409, f"{adapter.title} is not ready: {'; '.join(st.blockers)}. Next step: {st.next_step}")
         return {"job_id": jobs.enqueue(conn, "adapter_infer", body.model_dump())}
 
+    @app.post("/api/experiments/adapters/{name}/train")
+    def start_training(name: str, body: S.TrainIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        adapter = all_adapters(settings.adapter_env).get(name)
+        if adapter is None:
+            raise HTTPException(404, "unknown adapter")
+        caps = adapter.capabilities()
+        if not caps.can_train_in_app:
+            raise HTTPException(409, f"{adapter.title}: training is not offered ({caps.train_note})")
+        st = adapter.status()
+        if st.state != "ready":
+            raise HTTPException(409, f"{adapter.title} is not ready: {'; '.join(st.blockers)}. Next step: {st.next_step}")
+        try:
+            items, left_out = evaluation.training_items(store, conn, body.snapshot_id, caps.charset)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        if len(items) < evaluation.MIN_TRAIN_WORDS:
+            raise HTTPException(409, f"only {len(items)} usable training words in this snapshot "
+                                     f"(left out: {left_out or 'none'}); approve at least {evaluation.MIN_TRAIN_WORDS} first")
+        return {"job_id": jobs.enqueue(conn, "adapter_train", {"adapter": name, **body.model_dump()}), "train_words": len(items)}
+
+    @app.get("/api/experiments/checkpoints")
+    def checkpoints(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
+        return evaluation.personal_checkpoints(conn)
+
     @app.get("/api/experiments/runs")
     def runs(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:
         return evaluation.list_runs(conn)
@@ -492,13 +637,13 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
         return studio.list_assets(conn, limit, offset)
 
     @app.post("/api/studio/assets")
-    async def upload_asset(file: UploadFile = File(...)) -> dict[str, Any]:
+    async def upload_asset(file: UploadFile = File(...), label: str | None = Form(default=None, max_length=120)) -> dict[str, Any]:
         data = await file.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
             raise HTTPException(413, "file too large")
         conn = connect(settings.db_path)
         try:
-            return studio.add_upload_asset(conn, store, data, Path(file.filename or "image").stem)
+            return studio.add_upload_asset(conn, store, data, label or Path(file.filename or "image").stem)
         except imaging.UnsupportedInput as exc:
             raise HTTPException(422, str(exc)) from exc
         finally:

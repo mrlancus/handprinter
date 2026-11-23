@@ -1,0 +1,247 @@
+"""Boxes that fit the words: tails kept, margin lines ignored, word boxes re-cut from recognised text.
+
+Synthetic font pages, not handwriting: these test the geometry and the human-edit rules only.
+"""
+
+from __future__ import annotations
+
+import json
+
+import numpy as np
+from PIL import Image, ImageDraw
+
+from handprinter import detect, pages, review
+from handprinter.recognition import importer, package
+from handprinter.recognition.refit import segment_by_count
+from tests.fixtures import _font, page
+
+
+def _words(conn, line_id):
+    return conn.execute("SELECT * FROM regions WHERE parent_id = ? AND deleted = 0 AND kind = 'word' ORDER BY x", (line_id,)).fetchall()
+
+
+def _answer(store, pkg, entry, text):
+    result = {
+        "schema_version": "1", "item_id": entry["item_id"], "image_sha256": entry["image_sha256"], "model": "claude-haiku-test",
+        "region_type": "handwriting", "transcription": text, "uncertain_spans": [], "marks": [], "quality_flags": [],
+        "review_reasons": [], "author_ambiguous": False,
+    }
+    (package.package_dir(store, pkg) / "results" / f"{entry['item_id']}.json").write_text(json.dumps(result), encoding="utf-8")
+
+
+def test_margin_line_is_not_a_word_and_descenders_stay_inside():
+    img = page(["jumpy dog", "quiet fog"], ruling=False)
+    draw = ImageDraw.Draw(img)
+    draw.line([(60, 0), (72, img.height)], fill=(200, 60, 60), width=3)  # red margin rule, slightly tilted
+    found = detect.detect_layout(img)
+    assert len(found.lines) == 2
+    for line in found.lines:
+        assert all(w.x > 76 for w in line.words), "the margin rule became part of a word"
+    assert any(r.h == img.height and r.w < 40 for r in found.rulings)
+    # the glyph descenders of j, p, y, g reach below the baseline: the word boxes must hold them
+    gray = np.asarray(img.convert("L"), dtype=np.float32)
+    ink = detect.ink_mask(gray)
+    ink[:, :78] = False
+    for line in found.lines:
+        rows = np.flatnonzero(ink[:, int(line.box.x):int(line.box.x + line.box.w)].any(axis=1))
+        band = rows[(rows > line.box.y - 40) & (rows < line.box.y + line.box.h + 40)]
+        assert band.max() < line.box.y + line.box.h, "a tail was cut off"
+
+
+def test_segment_by_count_cuts_at_the_widest_gaps():
+    mask = np.zeros((20, 100), dtype=bool)
+    for x0, x1 in [(0, 10), (12, 20), (35, 45), (47, 50), (70, 90)]:  # letters; word gaps are 15 and 20
+        mask[5:15, x0:x1] = True
+    seg = segment_by_count(mask, [2, 2, 3])
+    assert seg is not None and seg.clear
+    assert [(b[0], b[2]) for b in seg.boxes] == [(0, 20), (35, 50), (70, 90)]
+    assert segment_by_count(mask, [1] * 6) is None  # more words than ink pieces: leave it to a person
+
+
+def test_stray_ink_at_the_end_of_a_line_is_left_out():
+    mask = np.zeros((20, 400), dtype=bool)
+    for x0, x1 in [(0, 10), (12, 20), (35, 45), (47, 50), (70, 90), (250, 399)]:  # three words, then a big doodle far off
+        mask[5:15, x0:x1] = True
+    seg = segment_by_count(mask, [2, 2, 3])
+    assert seg is not None and not seg.clear  # something was dropped: a person should glance at it
+    assert [(b[0], b[2]) for b in seg.boxes] == [(0, 20), (35, 50), (70, 90)]
+
+
+def _built(conn, store, settings, fixture_source):
+    sid = fixture_source()
+    pages.run_detection(conn, store, sid)
+    return sid
+
+
+def test_wrong_word_boxes_are_recut_from_the_text(conn, store, settings, fixture_source):
+    sid = _built(conn, store, settings, fixture_source)
+    line = conn.execute("SELECT * FROM regions WHERE source_id = ? AND kind = 'line' AND deleted = 0 ORDER BY y", (sid,)).fetchone()
+    src = pages.get_source(conn, sid)
+    # simulate a bad detection: the four words came out as one box spanning the line
+    for w in _words(conn, line["id"]):
+        review._write(conn, review.get_region(conn, w["id"]), {"deleted": 1}, "detector", "test")
+    from handprinter.geometry import Box
+    review.create_region(conn, src, "word", Box(line["x"], line["y"], line["w"], line["h"]), actor="detector", parent_id=line["id"])
+    info = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    entry = next(e for e in package.load_manifest(store, info["package_id"])["items"] if e["region_id"] == line["id"])
+    _answer(store, info["package_id"], entry, "the quick brown fox")
+    summary = importer.import_package(conn, store, info["package_id"])
+    assert summary["lines_refit"] == 1
+    words = _words(conn, line["id"])
+    assert [w["text"] for w in words] == ["the", "quick", "brown", "fox"]
+    assert all(a["x"] + a["w"] <= b["x"] + 1 for a, b in zip(words, words[1:])), "words overlap"
+    assert all(w["created_by"] == "machine" and w["text_origin"] == "machine" for w in words)
+
+
+def test_a_line_with_no_word_boxes_gets_them_from_the_text(conn, store, settings, fixture_source):
+    sid = _built(conn, store, settings, fixture_source)
+    line = conn.execute("SELECT * FROM regions WHERE source_id = ? AND kind = 'line' AND deleted = 0 ORDER BY y", (sid,)).fetchall()[1]
+    for w in _words(conn, line["id"]):
+        review._write(conn, review.get_region(conn, w["id"]), {"deleted": 1}, "detector", "test")
+    info = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    entry = next(e for e in package.load_manifest(store, info["package_id"])["items"] if e["region_id"] == line["id"])
+    _answer(store, info["package_id"], entry, "jumps over the lazy dog")
+    importer.import_package(conn, store, info["package_id"])
+    assert [w["text"] for w in _words(conn, line["id"])] == ["jumps", "over", "the", "lazy", "dog"]
+
+
+def test_boxes_a_person_touched_are_never_recut(conn, store, settings, fixture_source):
+    sid = _built(conn, store, settings, fixture_source)
+    line = conn.execute("SELECT * FROM regions WHERE source_id = ? AND kind = 'line' AND deleted = 0 ORDER BY y", (sid,)).fetchone()
+    first = _words(conn, line["id"])[0]
+    src = pages.get_source(conn, sid)
+    review.human_edit(conn, first["id"], {"box": {"x": first["x"] - 2, "y": first["y"], "w": first["w"] + 2, "h": first["h"]}}, processing_rev=src["processing_rev"])
+    before = {w["id"]: (w["x"], w["w"]) for w in _words(conn, line["id"])}
+    info = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    entry = next(e for e in package.load_manifest(store, info["package_id"])["items"] if e["region_id"] == line["id"])
+    _answer(store, info["package_id"], entry, "the quickbrown fox")  # disagrees with the boxes
+    summary = importer.import_package(conn, store, info["package_id"])
+    assert summary["lines_refit"] == 0
+    assert {w["id"]: (w["x"], w["w"]) for w in _words(conn, line["id"])} == before
+    assert "alignment_ambiguous" in review.get_region(conn, line["id"])["flags"]
+
+
+def _hand_page(rows: list[tuple[int, int, str]], size=(1200, 900)) -> Image.Image:
+    img = Image.new("RGB", size, (246, 243, 236))
+    draw = ImageDraw.Draw(img)
+    for x, y, text in rows:
+        draw.text((x, y), text, fill=(35, 38, 60), font=_font(44))
+    return img
+
+
+def _three_then(*rows):
+    return _hand_page([(90, 80, "first line here"), (90, 230, "second line here"), (90, 380, "third line here"), *rows])
+
+
+def test_touching_lines_are_split_and_flagged():
+    # tails of the fourth line (j, p, y, q, g) reach the capitals of the fifth: one ink band
+    found = detect.detect_layout(_three_then((90, 530, "jumpy quay gyp"), (90, 576, "Hold The Bell")))
+    assert len(found.lines) == 5, [line.box for line in found.lines]
+    fourth, fifth = found.lines[3], found.lines[4]
+    assert fourth.touches_neighbour and fifth.touches_neighbour and not fourth.may_hold_several
+    assert fourth.box.y < fifth.box.y and fifth.box.y + fifth.box.h > 610
+
+
+def test_overlapping_lines_that_cannot_be_cut_are_flagged_for_a_person():
+    found = detect.detect_layout(_three_then((90, 530, "jumpy quay gyp"), (90, 566, "Hold The Bell")))
+    assert len(found.lines) == 4 and found.lines[3].may_hold_several
+
+
+def test_words_running_off_the_photo_are_flagged():
+    found = detect.detect_layout(_hand_page([(90, 80, "stays inside"), (90, 230, "goes right off the page"), (90, 380, "inside again")], size=(560, 900)))
+    edge_lines = [line for line in found.lines if line.words_at_edge]
+    assert len(edge_lines) == 1 and edge_lines[0].box.y > 200
+
+
+def test_columns_are_found_before_lines():
+    """Dense two-column notes with a heading and a boxed diagram: no line may run across columns."""
+    img = Image.new("RGB", (1600, 1100), (250, 250, 247))
+    draw = ImageDraw.Draw(img)
+    small = _font(22)
+    draw.text((60, 30), "Acids and alkalis", fill=(30, 30, 40), font=_font(34))
+    left = ["An acid is a species that", "when dissolved in water", "forms an aqueous solution", "that will release H+ ions.",
+            "A common acid is HCl", "Bases and alkalis react", "with an acid and accept", "H+ ions in neutralisation"]
+    right = ["Water of crystallisation", "a crystalline compound", "that contains water", "molecules is hydrated",
+             "Thermal decomposition of", "salts can occur on heating", "MgSO4 gives MgO and gas"]
+    for i, t in enumerate(left):
+        draw.text((60, 110 + i * 34), t, fill=(30, 30, 40), font=small)
+    for i, t in enumerate(right):
+        draw.text((860, 104 + i * 34), t, fill=(30, 30, 40), font=small)  # slightly offset baselines
+    draw.rectangle([860, 520, 1300, 760], outline=(30, 30, 40), width=3)  # a diagram box
+    found = detect.detect_layout(img)
+    texty = [line for line in found.lines if line.box.y < 450]
+    assert len(texty) == 1 + len(left) + len(right), [(round(line.box.x), round(line.box.y)) for line in texty]
+    for line in texty:
+        assert line.box.x + line.box.w < 820 or line.box.x > 820, f"line runs across the gutter: {line.box}"
+        assert line.box.h < 60, f"line box holds several lines: {line.box}"
+
+
+def test_app_toolbar_on_a_dark_bar_is_not_writing():
+    img = page(["first line here", "second line here", "third line here"], ruling=False)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 0, img.width, 70], fill=(40, 60, 110))  # an app's dark title bar
+    for x in range(40, 1100, 120):  # with icons and tab labels on it
+        draw.rectangle([x, 20, x + 40, 50], outline=(200, 210, 230), width=3)
+        draw.text((x + 50, 22), "Tab", fill=(220, 225, 235), font=_font(22))
+    found = detect.detect_layout(img)
+    assert all(line.box.y > 70 for line in found.lines), [line.box for line in found.lines]
+    assert len(found.lines) == 3
+
+
+def test_sloping_close_lines_in_two_columns_stay_one_line_each():
+    """Like real notes: two columns, lines rising to the right, spaced-out words, lines close together."""
+    page_img = Image.new("RGB", (1800, 900), (255, 255, 255))
+    left = ["An acid is a species that when dissolved", "to form an aqueous solution will release", "Bases and alkalis are species that react",
+            "in a neutralisation reaction and accept", "An alkali is a water soluble base that"]
+    right = ["Water of crystallisation in a compound", "thermal decomposition of salts can occur", "this cannot be used for the reaction"]
+    font = _font(30)
+
+    def sloped(text: str) -> Image.Image:
+        words = text.split()
+        strip = Image.new("L", (900, 120), 0)
+        d = ImageDraw.Draw(strip)
+        x = 10
+        for wd in words:
+            d.text((x, 40), wd, fill=255, font=font)
+            x += int(d.textlength(wd, font=font)) + 34  # wide gaps between words, as in spaced-out writing
+        return strip.rotate(3, resample=Image.BICUBIC, expand=False)  # rising to the right
+
+    for col_x, lines_ in ((40, left), (980, right)):
+        for i, text in enumerate(lines_):
+            strip = sloped(text)
+            page_img.paste((30, 30, 40), (col_x, 60 + i * 56), strip)  # 56 px apart: tails nearly touch
+    found = detect.detect_layout(page_img)
+    words_per_line = sorted(len(line.words) for line in found.lines)
+    assert len(found.lines) == len(left) + len(right), [(round(l.box.x), round(l.box.y), len(l.words)) for l in found.lines]
+    for line in found.lines:
+        assert line.box.x + line.box.w < 960 or line.box.x > 960, f"line runs across columns: {line.box}"
+    assert words_per_line == sorted(len(t.split()) for t in left + right)
+
+
+def test_specks_are_not_lines_and_sideways_writing_is_not_sent_for_reading():
+    img = _hand_page([(90, 80, "first line here"), (90, 230, "second line here"), (90, 380, "third line here")], size=(1200, 700))
+    draw = ImageDraw.Draw(img)
+    for x, y in ((700, 150), (900, 320), (1000, 500)):  # stray dots and specks
+        draw.ellipse([x, y, x + 6, y + 6], fill=(30, 30, 40))
+    side = Image.new("L", (300, 60), 0)
+    ImageDraw.Draw(side).text((5, 5), "margin note", fill=255, font=_font(36))
+    img.paste((30, 30, 40), (1100, 150), side.rotate(90, expand=True))  # written up the margin
+    found = detect.detect_layout(img)
+    readable = [line for line in found.lines if not line.not_a_line]
+    assert len(readable) == 3, [line.box for line in found.lines]
+    assert any(line.not_a_line and line.box.x > 1090 for line in found.lines)
+
+
+def test_a_big_heading_and_small_notes_are_each_read_at_their_own_size():
+    img = Image.new("RGB", (1400, 900), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.text((60, 30), "Acids and Bases", fill=(30, 30, 40), font=_font(90))  # big heading
+    small = ["an acid releases H+ ions in water", "a base accepts H+ ions from acids", "an alkali is a soluble base",
+             "salts form when acids react", "with bases or with metals", "and carbonates too"]
+    for i, t in enumerate(small):
+        draw.text((60, 200 + i * 38), t, fill=(30, 30, 40), font=_font(26))  # small, tight notes
+    found = detect.detect_layout(img)
+    assert len(found.lines) == 1 + len(small), [(round(l.box.y), len(l.words)) for l in found.lines]
+    heading = found.lines[0]
+    assert len(heading.words) == 3 and heading.box.h > 60
+    assert sorted(len(l.words) for l in found.lines[1:]) == sorted(len(t.split()) for t in small)

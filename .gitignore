@@ -31,3 +31,6 @@ outputs/
 recognition/jobs/
 # Scratch screenshots (curated ones live in docs/screenshots)
 scripts/out/
+# Model environment and upstream code (scripts/setup_models.ps1)
+.venv-models/
+.models/

@@ -34,13 +34,54 @@ def cmd_run(settings: Settings) -> int:
         return 2
     proc = multiprocessing.Process(target=_worker, args=(settings,), name="handprinter-worker", daemon=False)
     proc.start()
-    print(f"Handprinter: http://{settings.host}:{settings.port}  (data: {settings.data_dir}; worker pid {proc.pid})")
+    print(f"Handprinter: http://{settings.host}:{settings.port}  (data: {settings.data_dir}; worker pid {proc.pid})"
+          + ("  [online: password required]" if settings.online else ""))
     try:
         _serve(settings)
     finally:
         proc.terminate()
         proc.join(timeout=15)
     return 0
+
+
+def cmd_online(settings: Settings) -> int:
+    """Run the app and publish it through a Cloudflare Tunnel, behind the sign-in password."""
+    import os
+
+    from handprinter import tunnel
+
+    binary = tunnel.find_cloudflared()
+    if not binary:
+        print("cloudflared is not installed. On Windows run:  winget install --id Cloudflare.cloudflared\n"
+              "then open a new terminal and start this again. Details: docs/online.md", file=sys.stderr)
+        return 2
+    if not settings.password:
+        print("Set HANDPRINTER_PASSWORD in .env first.", file=sys.stderr)
+        return 2
+    token = os.environ.get("HANDPRINTER_TUNNEL_TOKEN") or _dotenv_value("HANDPRINTER_TUNNEL_TOKEN")
+    public = os.environ.get("HANDPRINTER_PUBLIC_URL") or _dotenv_value("HANDPRINTER_PUBLIC_URL")
+
+    def show(url: str) -> None:
+        bar = "=" * (len(url) + 8)
+        print(f"\n{bar}\n    {url}\n{bar}\nOpen this on your iPad or phone and sign in with your password."
+              f"\nKeep this window open: closing it takes the site offline.\n", flush=True)
+
+    relay_url = os.environ.get("HANDPRINTER_RELAY_URL") or _dotenv_value("HANDPRINTER_RELAY_URL")
+    if relay_url and not settings.relay_secret:
+        print("HANDPRINTER_RELAY_URL is set but HANDPRINTER_RELAY_SECRET is not: the relay is not used.", file=sys.stderr)
+    t = tunnel.Tunnel(settings, binary, token, public, show, relay_url, settings.relay_secret)
+    t.start()
+    print("Starting the Cloudflare tunnel (the address appears in a few seconds)...", flush=True)
+    try:
+        return cmd_run(settings)
+    finally:
+        t.stop()
+
+
+def _dotenv_value(key: str) -> str | None:
+    from handprinter.config import _load_dotenv
+
+    return _load_dotenv(Path.cwd() / ".env").get(key) or None
 
 
 def cmd_recognition(settings: Settings, args: argparse.Namespace) -> int:
@@ -51,6 +92,23 @@ def cmd_recognition(settings: Settings, args: argparse.Namespace) -> int:
     store = Store(settings)
     conn = connect(settings.db_path)
     init_db(conn)
+    if args.action == "status":
+        rows = conn.execute(
+            """SELECT p.id, p.created_at, p.status, p.item_count,
+                      SUM(i.status = 'pending') AS pending, SUM(i.status = 'failed') AS failed, SUM(i.status = 'succeeded') AS imported
+               FROM recognition_packages p LEFT JOIN recognition_items i ON i.package_id = p.id
+               GROUP BY p.id ORDER BY p.created_at DESC LIMIT 5""").fetchall()
+        recent = []
+        for r in rows:
+            item = dict(r)
+            item["read_not_imported"] = package.results_waiting(store, conn, r["id"])
+            recent.append(item)
+        out = {"data_dir": str(settings.data_dir), "database": str(settings.db_path), "recent_packages": recent}
+        lines = [f"data folder: {out['data_dir']}"] + [
+            f"{r['id']}  {r['created_at'][:16]}  items {r['item_count']}  pending {r['pending'] or 0}  imported {r['imported'] or 0}"
+            f"  failed {r['failed'] or 0}  read-not-imported {r['read_not_imported']}" for r in recent]
+        print(json.dumps(out, indent=2) if args.json else "\n".join(lines if recent else lines + ["no recognition packages yet"]))
+        return 0
     if args.action == "pending":
         rows = package.pending_packages(conn)
         out = [{**r, "path": str(package.package_dir(store, r["id"]))} for r in rows]
@@ -73,6 +131,15 @@ def cmd_recognition(settings: Settings, args: argparse.Namespace) -> int:
         return 0 if not bad else 1
     if args.action == "import":
         print(json.dumps(importer.import_package(conn, store, args.package_id), indent=2))
+        return 0
+    if args.action == "show":
+        items = package.item_readings(conn, args.package_id)
+        if args.json:
+            print(json.dumps(items, indent=2, ensure_ascii=False))
+        else:
+            for it in items:
+                read = it["text"] if it["text"] is not None else ("(page layout)" if it["context_type"] == "page_overview" else "(nothing read)")
+                print(f"{it['item_id']}  {it['status']:<9}  {it['page'] or '?'}  {read}{'  [needs a look]' if it['flags'] else ''}")
         return 0
     return 2
 
@@ -101,22 +168,41 @@ def cmd_backup(settings: Settings, dest: Path) -> int:
     return 0
 
 
+def _utf8_console() -> None:
+    """Print any character (→, LaTeX, accents) even where the console defaults to a legacy code page (Windows cp1252)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_console()
     parser = argparse.ArgumentParser(prog="handprinter", description="Local handwriting dataset and generation studio")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="start web server and worker (the normal launch command)")
+    sub.add_parser("online", help="run, and publish it online through a Cloudflare Tunnel behind a password")
     sub.add_parser("serve", help="start only the web server")
     sub.add_parser("worker", help="start only the background worker")
     doc = sub.add_parser("doctor", help="report OS, Python, GPU, decoders, Claude CLI and adapters")
     doc.add_argument("--json", action="store_true")
     rec = sub.add_parser("recognition", help="recognition package helpers for Claude Code")
-    rec.add_argument("action", choices=["pending", "validate", "import"])
+    rec.add_argument("action", choices=["pending", "status", "validate", "import", "show"])
     rec.add_argument("package_id", nargs="?")
     rec.add_argument("--json", action="store_true")
     bak = sub.add_parser("backup", help="copy the database and data files to a folder")
     bak.add_argument("dest", type=Path)
     args = parser.parse_args(argv)
+    if args.command == "online":
+        import os
+
+        os.environ["HANDPRINTER_ONLINE"] = "1"
+        os.environ["HANDPRINTER_HOST"] = "127.0.0.1"  # only the tunnel reaches the server
+        get_settings.cache_clear()
     settings = get_settings()
+    if args.command == "online":
+        return cmd_online(settings)
 
     if args.command == "run":
         return cmd_run(settings)

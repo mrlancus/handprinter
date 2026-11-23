@@ -116,7 +116,7 @@ def main():
     except Exception as exc:  # report, never hide
         emit("result", ok=False, error=f"{exc.__class__.__name__}: {exc}")
         return 1
-    emit("result", ok=True, **result)
+    emit("result", **{"ok": True, **result})
     return 0
 
 

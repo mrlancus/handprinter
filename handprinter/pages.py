@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import math
 import sqlite3
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from handprinter import detect, imaging, review
 from handprinter.db import dumps, row_dict, transaction
@@ -94,42 +96,348 @@ def run_detection(conn: sqlite3.Connection, store: Store, source_id: str, replac
     img = Image.open(store.processed(source_id, source["processing_rev"])).convert("RGB")
     if source["processing"].get("lighting"):
         img = imaging.normalise_lighting(img)
-    result = detect.detect_layout(img)
+    result = detect.detect_layout(img, omitted_boxes(conn, source_id))
     created = {"lines": 0, "words": 0, "rulings": 0, "skipped_overlapping": 0}
     with transaction(conn):
-        detector_rows = conn.execute(
-            "SELECT id, revision FROM regions WHERE source_id = ? AND deleted = 0 AND created_by = 'detector'", (source_id,)
+        machine_rows = conn.execute(
+            """SELECT id FROM regions r WHERE source_id = ? AND deleted = 0 AND created_by IN ('detector', 'machine')
+               AND NOT EXISTS (SELECT 1 FROM region_revisions v WHERE v.region_id = r.id AND v.actor = 'human')
+               AND NOT EXISTS (SELECT 1 FROM json_each(r.flags) WHERE value = 'omit_suggestion')""", (source_id,)
         ).fetchall()
-        if detector_rows and not replace:
+        has_detector = conn.execute(
+            "SELECT 1 FROM regions WHERE source_id = ? AND deleted = 0 AND created_by = 'detector' LIMIT 1", (source_id,)).fetchone()
+        if has_detector and not replace:
             return {"skipped": True, "reason": "detector proposals already exist; use replace to re-run", **created}
-        # Only untouched detector proposals are replaced; anything edited or drawn by a person is kept.
-        for row in detector_rows:
-            if row["revision"] == 1:
-                review._write(conn, review.get_region(conn, row["id"]), {"deleted": 1}, "detector", "replaced_by_redetect")
-        kept = [Box(r["x"], r["y"], r["w"], r["h"]) for r in conn.execute(
-            "SELECT x, y, w, h FROM regions WHERE source_id = ? AND deleted = 0 AND kind IN ('line', 'word', 'block')", (source_id,))]
+        # Re-detecting replaces every machine guess nobody has touched (detector boxes, recogniser word cuts and
+        # their suggested text). Anything a person drew, moved, typed, approved or excluded is kept.
+        for row in machine_rows if replace else []:
+            review._write(conn, review.get_region(conn, row["id"]), {"deleted": 1}, "detector", "replaced_by_redetect")
+        kept = conn.execute(
+            "SELECT id, kind, x, y, w, h FROM regions WHERE source_id = ? AND deleted = 0 AND kind IN ('line', 'word', 'block')", (source_id,)).fetchall()
+        kept_lines = [Box(r["x"], r["y"], r["w"], r["h"]) for r in kept if r["kind"] in ("line", "block")]
+        kept_words = [(r["id"], Box(r["x"], r["y"], r["w"], r["h"])) for r in kept if r["kind"] == "word"]
 
-        def overlaps_kept(box: Box) -> bool:
-            return any(box.intersection_area(k) > 0.5 * min(box.w * box.h, k.w * k.h) for k in kept)
+        def overlaps(box: Box, others: list[Box]) -> bool:
+            return any(box.intersection_area(k) > 0.5 * min(box.w * box.h, k.w * k.h) for k in others)
 
         for ruling in result.rulings:
-            if overlaps_kept(ruling):
+            if overlaps(ruling, kept_lines):
                 created["skipped_overlapping"] += 1
                 continue
             review.create_region(conn, source, "block", ruling, actor="detector", cls="printed_ruling")
             created["rulings"] += 1
         for line in result.lines:
             flags = ["ruling_overlap"] if line.overlaps_ruling else []
-            if overlaps_kept(line.box):
+            if line.touches_neighbour:
+                flags.append("lines_touching")
+            if overlaps(line.box, kept_lines):
                 created["skipped_overlapping"] += 1
                 continue
-            line_region = review.create_region(conn, source, "line", line.box, actor="detector", flags=flags)
+            if line.not_a_line:
+                # kept visible for you to judge, but as a block: only lines are sent for reading
+                review.create_region(conn, source, "block", line.box, actor="detector", cls="uncertain", status="needs_review",
+                                     flags=["not_a_line"], review_reason="sideways writing, a bracket or part of a drawing; not sent for "
+                                     "reading. Draw a line box over it if it is writing you want to keep.")
+                created["blocks"] = created.get("blocks", 0) + 1
+                continue
+            line_flags = flags + (["may_be_several_lines"] if line.may_hold_several else [])
+            reason = "this box may hold more than one line of writing; split it if so" if line.may_hold_several else None
+            line_region = review.create_region(conn, source, "line", line.box, actor="detector", flags=line_flags, review_reason=reason)
             created["lines"] += 1
-            for wbox in line.words:
-                review.create_region(conn, source, "word", wbox, actor="detector", parent_id=line_region["id"], flags=flags)
+            mine = [(wid, wb) for wid, wb in kept_words if line.box.intersection_area(wb) > 0.5 * wb.w * wb.h]
+            for wid, _ in mine:  # your own word boxes join the new line they sit in
+                conn.execute("UPDATE regions SET parent_id = ? WHERE id = ?", (line_region["id"], wid))
+            for index, wbox in enumerate(line.words):
+                if overlaps(wbox, [wb for _, wb in mine]):
+                    continue
+                at_edge = index in line.words_at_edge
+                review.create_region(conn, source, "word", wbox, actor="detector", parent_id=line_region["id"],
+                                     flags=flags + (["runs_off_edge"] if at_edge else []),
+                                     review_reason="touches the edge of the photo; keep it only if the whole word is visible" if at_edge else None)
                 created["words"] += 1
         conn.execute("UPDATE sources SET detection_status = 'done' WHERE id = ?", (source_id,))
     return created
+
+
+# ---------- omitted areas ----------
+# An omitted area is a human-drawn block (class "omitted", status "excluded") covering something that
+# is not your handwriting: a diagram, a printed worksheet header, someone else's notes. Detection ignores
+# ink inside it, recognition packages blank it out, and regions mostly inside it are excluded.
+
+OMIT_REASONS = {
+    "diagram": "Diagram or drawing",
+    "printed": "Printed text or worksheet instructions",
+    "other_author": "Someone else's writing",
+    "scribble": "Scribbles or crossings-out",
+    "other": "Other",
+}
+INSIDE_FRACTION = 0.6
+
+
+def omitted_areas(conn: sqlite3.Connection, source_id: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM regions WHERE source_id = ? AND deleted = 0 AND cls = 'omitted' ORDER BY y, x", (source_id,)
+    ).fetchall()
+
+
+def omitted_boxes(conn: sqlite3.Connection, source_id: str) -> list[Box]:
+    return [Box(r["x"], r["y"], r["w"], r["h"]) for r in omitted_areas(conn, source_id)]
+
+
+SUGGEST_FROM = {"diagram": "diagram", "printed_text": "printed"}  # recogniser region type -> omit reason
+
+
+def omit_suggestions(conn: sqlite3.Connection, source_id: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM regions WHERE source_id = ? AND deleted = 0 AND kind = 'block' AND status = 'needs_review' "
+        "AND EXISTS (SELECT 1 FROM json_each(flags) WHERE value = 'omit_suggestion') ORDER BY y, x", (source_id,)).fetchall()
+
+
+def suggest_omits(conn: sqlite3.Connection, source: dict[str, Any], boxes: list[tuple[Box, str]], proposal_id: str) -> int:
+    """Turn the page overview's diagrams and printed text into omit suggestions (never applied by themselves).
+
+    Skips areas already omitted or already suggested. Each suggestion waits for one tap: omit or dismiss.
+    """
+    existing = [Box(r["x"], r["y"], r["w"], r["h"]) for r in omitted_areas(conn, source["id"])]
+    existing += [Box(r["x"], r["y"], r["w"], r["h"]) for r in omit_suggestions(conn, source["id"])]
+    made = 0
+    for box, region_type in boxes:
+        reason = SUGGEST_FROM.get(region_type)
+        if reason is None or box.w * box.h < 0.002 * source["processed_w"] * source["processed_h"]:
+            continue
+        if any(box.intersection_area(e) > 0.5 * min(box.w * box.h, e.w * e.h) for e in existing):
+            continue
+        cls = "diagram" if reason == "diagram" else "printed_text"
+        review.create_region(conn, source, "block", box, actor="machine", cls=cls, status="needs_review", flags=["omit_suggestion"],
+                             action=f"suggest_omit:{proposal_id}", review_reason=reason)
+        existing.append(box)
+        made += 1
+    return made
+
+
+def accept_suggestion(conn: sqlite3.Connection, source_id: str, region_id: str) -> dict[str, Any]:
+    """Your tap on a suggestion: omit exactly that area, and retire the suggestion."""
+    region = review.get_region(conn, region_id)
+    if region["source_id"] != source_id or "omit_suggestion" not in region["flags"] or region["deleted"]:
+        raise review.ReviewError("not an open suggestion on this page")
+    source = get_source(conn, source_id)
+    out = omit_area(conn, source_id, Box(region["x"], region["y"], region["w"], region["h"]),
+                    region["review_reason"] if region["review_reason"] in OMIT_REASONS else "other", source["processing_rev"])
+    with transaction(conn):
+        review._write(conn, review.get_region(conn, region_id), {"deleted": 1}, "human", "suggestion_accepted")
+    return out
+
+
+def dismiss_suggestion(conn: sqlite3.Connection, source_id: str, region_id: str) -> None:
+    region = review.get_region(conn, region_id)
+    if region["source_id"] != source_id or "omit_suggestion" not in region["flags"]:
+        raise review.ReviewError("not a suggestion on this page")
+    with transaction(conn):
+        review._write(conn, region, {"deleted": 1}, "human", "suggestion_dismissed")
+
+
+def omit_on_same_size_pages(conn: sqlite3.Connection, source_id: str, box: Box, reason: str) -> int:
+    """Omit the same area on every other page of exactly this size with no geometry correction.
+
+    For screenshots from one app, whose toolbars sit in the same place on every page. Pages that were
+    rotated or perspective-corrected are skipped: the same numbers would not mean the same place.
+    """
+    src = get_source(conn, source_id)
+    if {k for k in src["processing"] if k != "lighting"}:
+        return 0
+    done = 0
+    for row in conn.execute(
+        "SELECT id FROM sources WHERE deleted = 0 AND id != ? AND original_w = ? AND original_h = ? AND processed_w = ? AND processed_h = ?",
+        (source_id, src["original_w"], src["original_h"], src["processed_w"], src["processed_h"])).fetchall():
+        other = get_source(conn, row["id"])
+        if {k for k in other["processing"] if k != "lighting"}:
+            continue
+        already = [Box(a["x"], a["y"], a["w"], a["h"]) for a in omitted_areas(conn, other["id"])]
+        if any(abs(a.x - box.x) < 2 and abs(a.y - box.y) < 2 and abs(a.w - box.w) < 2 and abs(a.h - box.h) < 2 for a in already):
+            continue
+        omit_area(conn, other["id"], box, reason, other["processing_rev"])
+        done += 1
+    return done
+
+
+def omit_area(conn: sqlite3.Connection, source_id: str, box: Box, reason: str, processing_rev: int | None) -> dict[str, Any]:
+    """Mark an area of the page as not-for-use and exclude the regions that lie mostly inside it.
+
+    Approved regions are left as you decided and reported back; everything else is excluded with a
+    reason that lets `restore_area` put it back exactly.
+    """
+    if reason not in OMIT_REASONS:
+        raise review.ReviewError(f"unknown omit reason {reason!r}")
+    with transaction(conn):
+        source = get_source(conn, source_id)
+        review.check_frame(source, processing_rev)
+        area = review.create_region(conn, source, "block", box, actor="human", cls="omitted", status="excluded",
+                                    review_reason=reason, action="omit_area")
+        area_box = Box(area["x"], area["y"], area["w"], area["h"])
+        excluded, kept_approved = 0, 0
+        for row in conn.execute(
+            "SELECT id, x, y, w, h, status FROM regions WHERE source_id = ? AND deleted = 0 AND cls != 'omitted' AND id != ?",
+            (source_id, area["id"]),
+        ).fetchall():
+            b = Box(row["x"], row["y"], row["w"], row["h"])
+            if b.w * b.h <= 0 or b.intersection_area(area_box) < INSIDE_FRACTION * b.w * b.h:
+                continue
+            if row["status"] == "approved":
+                kept_approved += 1
+                continue
+            if row["status"] == "excluded":
+                continue
+            region = review.get_region(conn, row["id"])
+            review._write(conn, region, {"status": "excluded", "review_reason": f"omitted:{area['id']}", "deferred": 0},
+                          "human", f"excluded_by_omit:{area['id']}")
+            excluded += 1
+    return {"area": area, "excluded": excluded, "kept_approved": kept_approved}
+
+
+def restore_area(conn: sqlite3.Connection, source_id: str, area_id: str) -> dict[str, Any]:
+    """Remove an omitted area and return the regions it excluded to the status they had before."""
+    with transaction(conn):
+        area = review.get_region(conn, area_id)
+        if area["source_id"] != source_id or area["cls"] != "omitted" or area["deleted"]:
+            raise review.ReviewError("not an omitted area on this page")
+        review._write(conn, area, {"deleted": 1}, "human", "restore_area")
+        restored = 0
+        for row in conn.execute(
+            "SELECT id FROM regions WHERE source_id = ? AND deleted = 0 AND status = 'excluded' AND review_reason = ?",
+            (source_id, f"omitted:{area_id}"),
+        ).fetchall():
+            region = review.get_region(conn, row["id"])
+            mark = conn.execute(
+                "SELECT revision FROM region_revisions WHERE region_id = ? AND action = ? ORDER BY revision DESC LIMIT 1",
+                (region["id"], f"excluded_by_omit:{area_id}"),
+            ).fetchone()
+            before = mark and conn.execute(
+                "SELECT data FROM region_revisions WHERE region_id = ? AND revision < ? ORDER BY revision DESC LIMIT 1",
+                (region["id"], mark["revision"]),
+            ).fetchone()
+            data = json.loads(before["data"]) if before else {"status": "needs_review", "review_reason": None, "deferred": 0}
+            review._write(conn, region, {"status": data["status"], "review_reason": data["review_reason"], "deferred": data["deferred"]},
+                          "human", f"restored_from_omit:{area_id}")
+            restored += 1
+    return {"restored": restored}
+
+
+def paint_omitted(img: Image.Image, context: Box, areas: list[Box], fill: tuple[int, int, int] = (200, 200, 200)) -> Image.Image:
+    """Cover omitted areas in an image cut at `context` (processed frame) so they are never sent."""
+    if not areas:
+        return img
+    sx, sy = img.width / context.w, img.height / context.h
+    out = img.copy()
+    draw = ImageDraw.Draw(out)
+    for a in areas:
+        # whole pixels, clipped to the image; an area that only grazes the edge (under a pixel) covers nothing
+        x0 = max(0, math.floor((a.x - context.x) * sx))
+        y0 = max(0, math.floor((a.y - context.y) * sy))
+        x1 = min(out.width, math.ceil((a.x + a.w - context.x) * sx))
+        y1 = min(out.height, math.ceil((a.y + a.h - context.y) * sy))
+        if x1 <= x0 or y1 <= y0:
+            continue
+        draw.rectangle([x0, y0, x1 - 1, y1 - 1], fill=fill)
+    return out
+
+
+def fade_outside(img: Image.Image, context: Box, keep: Box | list[Box], strength: float = 0.75) -> Image.Image:
+    """Fade everything outside `keep` towards white, so a reader sees which line is meant.
+
+    `keep` is the target box or, better, the target line's word boxes: on sloping handwriting a
+    line's box also covers words of the lines above and below, its word boxes do not. The
+    surrounding writing stays faintly visible as context. Recognition images only, never training crops.
+    """
+    boxes = keep if isinstance(keep, list) else [keep]
+    sx, sy = img.width / context.w, img.height / context.h
+    base = img.convert("RGB")
+    faded = Image.blend(base, Image.new("RGB", img.size, (255, 255, 255)), strength)
+    for b in boxes:
+        x0, y0 = max(0, round((b.x - context.x) * sx)), max(0, round((b.y - context.y) * sy))
+        x1, y1 = min(img.width, round((b.x + b.w - context.x) * sx)), min(img.height, round((b.y + b.h - context.y) * sy))
+        if x1 > x0 and y1 > y0:
+            faded.paste(base.crop((x0, y0, x1, y1)), (x0, y0))
+    return faded
+
+
+# ---------- per-page analysis ----------
+
+QUALITY_TEXT = {
+    "possible_blur": "The photo may be blurry. Fine strokes can be lost; consider retaking it.",
+    "possible_glare": "Bright glare patches. Writing under glare may be missing.",
+    "possible_shadow": "Uneven lighting or a shadow. Try \u201cEven out lighting\u201d, or retake in flat light.",
+    "possible_clipped_writing": "Ink touches the photo edge. Some writing may be cut off.",
+}
+ORIENTATION_TEXT = {1: "already upright", 2: "mirrored", 3: "rotated 180\u00b0", 4: "flipped vertically", 5: "mirrored and rotated",
+                    6: "rotated 90\u00b0 clockwise", 7: "mirrored and rotated", 8: "rotated 90\u00b0 counter-clockwise"}
+
+
+def analysis(conn: sqlite3.Connection, source_id: str) -> dict[str, Any]:
+    """Plain-language account of what the app did to a page and what it will use from it."""
+    src = get_source(conn, source_id)
+    rows = conn.execute(
+        "SELECT kind, cls, status, text_origin, review_reason, COUNT(*) n FROM regions WHERE source_id = ? AND deleted = 0 GROUP BY 1,2,3,4,5",
+        (source_id,),
+    ).fetchall()
+
+    def count(pred: Any) -> int:
+        return sum(r["n"] for r in rows if pred(r))
+
+    writing = lambda r: r["kind"] in ("line", "word") and r["cls"] in ("handwriting", "uncertain")  # noqa: E731
+    words = count(lambda r: r["kind"] == "word" and r["status"] != "excluded")
+    lines = count(lambda r: r["kind"] == "line" and r["status"] != "excluded")
+    rulings = count(lambda r: r["cls"] == "printed_ruling" and r["status"] != "excluded")
+    areas = [dict(r) for r in omitted_areas(conn, source_id)]
+    by_omit = count(lambda r: (r["review_reason"] or "").startswith("omitted:"))
+    excluded_other = count(lambda r: r["status"] == "excluded" and r["cls"] != "omitted" and not (r["review_reason"] or "").startswith("omitted:"))
+    approved = count(lambda r: r["kind"] == "word" and r["status"] == "approved")
+    with_text = count(lambda r: writing(r) and r["kind"] == "word" and r["status"] in ("proposed", "needs_review") and r["text_origin"] == "machine")
+    to_review = count(lambda r: r["status"] in ("unprocessed", "proposed", "needs_review") and r["cls"] != "printed_ruling")
+    stale = conn.execute("SELECT COUNT(*) FROM regions WHERE source_id = ? AND deleted = 0 AND processing_rev != ?", (source_id, src["processing_rev"])).fetchone()[0]
+    proc = src["processing"]
+    corrections = [x for x in (
+        "perspective from 4 corners" if proc.get("corners") else None,
+        f"rotated {proc['rotation']:g}\u00b0" if proc.get("rotation") else None,
+        "lighting evened out for display and detection" if proc.get("lighting") else None,
+    ) if x]
+
+    def step(key: str, label: str, state: str, detail: str) -> dict[str, str]:
+        return {"key": key, "label": label, "state": state, "detail": detail}
+
+    steps = [
+        step("original", "Original kept", "done", f"{src['mime']} · {src['original_w']} \u00d7 {src['original_h']} px, stored byte-for-byte (sha256 {src['sha256'][:12]}\u2026)."),
+        step("orientation", "Turned upright", "done", f"Phone orientation tag: {ORIENTATION_TEXT.get(src['exif_orientation'], 'unknown')}."),
+        step("correction", "Camera correction", "done" if corrections else "info",
+             "; ".join(corrections) + "." if corrections else "None applied. If the page is photographed at an angle, use Adjust corners."),
+        step("duplicates", "Duplicate check", "warn" if src["near_duplicates"] else "done",
+             f"Looks like {len(src['near_duplicates'])} other page(s); they will share a split." if src["near_duplicates"] else "No matching pages found."),
+        step("quality", "Photo quality", "warn" if src["quality_flags"] else "done",
+             " ".join(QUALITY_TEXT.get(f, f) for f in src["quality_flags"]) if src["quality_flags"] else "No blur, glare, shadow or cut-off edges detected (automatic and fallible)."),
+        step("detection", "Writing found", "done" if src["detection_status"] == "done" else "todo",
+             f"{lines} line(s) and {words} word box(es) proposed; {rulings} printed ruling line(s) recognised and ignored."
+             if src["detection_status"] == "done" else "Detection has not run yet."),
+        step("omitted", "Areas you omitted", "done" if areas else "info",
+             f"{len(areas)} area(s) omitted; {by_omit} box(es) inside them excluded. Detection ignores them and they are blanked out before anything is sent for recognition."
+             if areas else "None. Draw a box over diagrams, printed text or anything that is not your handwriting to leave it out."),
+        step("recognition", "Suggested text", "done" if with_text or approved else "todo",
+             f"{with_text} word(s) have a machine suggestion waiting for review." if with_text else "No suggestions yet. Select the page in Sources and choose Prepare recognition\u2026"),
+        step("training", "Ready for training", "done" if approved else "todo",
+             f"{approved} approved word(s) will be exported. Only approved, unflagged handwriting is used." if approved else "Nothing approved yet. Approve words in Review to use them."),
+    ]
+    if stale:
+        steps.insert(3, step("stale", "Boxes from an older correction", "warn", f"{stale} box(es) were moved after re-processing and need a quick re-check in Review."))
+    return {
+        "source_id": source_id,
+        "frame": {"name": "processed", "width": src["processed_w"], "height": src["processed_h"], "processing_rev": src["processing_rev"]},
+        "steps": steps,
+        "counts": {"lines": lines, "words": words, "rulings": rulings, "omitted_areas": len(areas), "excluded_by_omit": by_omit,
+                   "excluded_other": excluded_other, "approved_words": approved, "to_review": to_review},
+        "omitted_areas": [{"id": a["id"], "x": a["x"], "y": a["y"], "w": a["w"], "h": a["h"], "reason": a["review_reason"],
+                           "label": OMIT_REASONS.get(a["review_reason"] or "", "Omitted")} for a in areas],
+        "omit_reasons": OMIT_REASONS,
+        "suggestions": [{"id": r["id"], "x": r["x"], "y": r["y"], "w": r["w"], "h": r["h"], "reason": r["review_reason"],
+                         "label": OMIT_REASONS.get(r["review_reason"] or "", "Not handwriting")} for r in omit_suggestions(conn, source_id)],
+    }
 
 
 class WorkingImages:

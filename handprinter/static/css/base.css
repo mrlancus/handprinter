@@ -114,3 +114,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { box-shadow: 
 .divider { height: 1px; background: var(--c-border); border: 0; margin: var(--sp-3) 0; }
 .progress--neutral > span { background: var(--c-text-faint); }
 .btn { text-decoration: none; }
+
+/* ---------- touch screens (iPad, phone) ---------- */
+@media (pointer: coarse) {
+  /* 16px stops iPad/iPhone Safari zooming the page when a field is focused. */
+  input[type="text"], input[type="number"], input[type="date"], input[type="search"], input[type="password"], select, textarea { font-size: 16px; min-height: 40px; }
+  .btn { min-height: 40px; }
+  .btn--sm { min-height: 36px; padding-inline: 10px; }
+  .check input[type="checkbox"], .check input[type="radio"] { width: 20px; height: 20px; }
+  kbd, .kbd-hint { display: none; }
+  button, a, label, summary { -webkit-tap-highlight-color: rgba(47, 91, 58, 0.12); }
+}

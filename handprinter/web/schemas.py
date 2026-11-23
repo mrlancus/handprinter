@@ -20,6 +20,17 @@ class BatchIn(BaseModel):
     style_era: Literal["current", "older"] = "current"
     note: str | None = Field(default=None, max_length=300)
     detect: bool = True
+    sheet_id: str | None = Field(default=None, pattern=r"^sht_[0-9a-f]{16}$")  # this upload is a written-out writing sheet
+    pages: str | None = Field(default=None, max_length=200, pattern=r"^[\d\s,-]*$")  # PDF pages to import, e.g. "1-7, 9"
+    sheet_start: int | None = Field(default=None, ge=1, le=99999)  # first chosen page is this sheet number, the rest follow
+
+
+class SheetIn(BaseModel):
+    focus: Literal["mixed", "everyday", "pairs", "capitals", "maths", "chemistry", "physics", "python", "mine"] = "mixed"
+
+
+class ApplySheetIn(BaseModel):
+    sheet_id: str = Field(pattern=r"^sht_[0-9a-f]{16}$")
 
 
 class SourcePatch(BaseModel):
@@ -34,6 +45,13 @@ class ProcessingIn(BaseModel):
     corners: list[list[float]] | None = Field(default=None, min_length=4, max_length=4)
     rotation: float = 0
     lighting: bool = False
+
+
+class OmitIn(BaseModel):
+    processing_rev: int
+    box: BoxIn
+    reason: Literal["diagram", "printed", "other_author", "scribble", "other"] = "diagram"
+    same_size_pages: bool = False  # also omit it on every other uncorrected page of exactly this size
 
 
 class DetectIn(BaseModel):
@@ -67,8 +85,27 @@ class RevisionIn(BaseModel):
     expected_revision: int | None = None
 
 
+class ApproveLineIn(BaseModel):
+    words: dict[str, str | None] = {}
+    text: str | None = Field(None, max_length=2000)  # for a line without word boxes
+    expected_revision: int | None = None
+
+
+class RecutLineIn(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class ApproveClearIn(BaseModel):
+    source_id: str | None = Field(default=None, pattern=r"^src_[0-9a-f]{16}$")  # None = every page
+
+
+class ExcludeLineIn(BaseModel):
+    reason: str | None = Field(None, max_length=200)
+
+
 class SplitIn(BaseModel):
-    at_x: float
+    at_x: float | None = None
+    at_y: float | None = None  # split top/bottom instead (a box holding two lines of writing)
     texts: tuple[str | None, str | None] = (None, None)
 
 
@@ -116,6 +153,7 @@ class SnapshotIn(BaseModel):
     holdout_sessions: list[str] = []
     seed: int = 1234
     unseen_word_fraction: float = Field(default=0.1, ge=0, le=0.5)
+    include_maths: bool = True
 
 
 class RunIn(BaseModel):
@@ -127,6 +165,16 @@ class RunIn(BaseModel):
     snapshot_id: str | None = None
     kind: Literal["baseline", "generation"] = "baseline"
     options: dict[str, float] = {}
+    checkpoint: str | None = Field(default=None, pattern=r"^(pretrained|run_[0-9a-f]{16})$")
+
+
+class TrainIn(BaseModel):
+    snapshot_id: str
+    name: str = Field(default="", max_length=80)
+    steps: int = Field(default=2000, ge=50, le=50000)
+    batch_size: int = Field(default=8, ge=1, le=64)
+    lr: float = Field(default=5e-5, gt=0, le=1e-3)
+    seed: int = 7
 
 
 class StyleProfileIn(BaseModel):
@@ -158,4 +206,4 @@ class CompositionSave(BaseModel):
 
 
 class LoginIn(BaseModel):
-    token: str
+    token: str = Field(max_length=200)

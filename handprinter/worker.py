@@ -12,7 +12,7 @@ import traceback
 from pathlib import Path
 from typing import Any, Callable
 
-from handprinter import dataset, evaluation, ingest, jobs, pages
+from handprinter import dataset, evaluation, ingest, jobs, pages, sheets
 from handprinter.adapters import all_adapters
 from handprinter.adapters.base import RunnerCancelled
 from handprinter.config import Settings
@@ -49,15 +49,34 @@ class Job:
 def _import_upload(job: Job) -> Any:
     p = job.params
     staged = job.store.staging(p["staged_id"])
-    batch = ingest.BatchInfo(p["batch_id"], p["source_type"], p.get("session"), p.get("captured_date"), p.get("style_era", "current"))
+    wanted = ingest.parse_pages(p.get("pages"))
+    batch = ingest.BatchInfo(p["batch_id"], p["source_type"], p.get("session"), p.get("captured_date"), p.get("style_era", "current"), wanted)
     results = ingest.import_upload(job.conn, job.store, staged, p["filename"], batch, job.progress)
     staged.unlink(missing_ok=True)
     out = [r.as_dict() for r in results]
-    if p.get("detect", True):
+    if p.get("detect", True) or p.get("sheet_id") or p.get("sheet_start"):
         for sid in {sid for r in results for sid in r.source_ids}:
             if pages.get_source(job.conn, sid)["detection_status"] == "none":
                 pages.run_detection(job.conn, job.store, sid)
-    return {"entries": out}
+    sheet_results = []
+    if p.get("sheet_id"):  # a written-out writing sheet: label it from the sheet, no recognition needed
+        for sid in sorted({sid for r in results for sid in r.source_ids}):
+            sheet_results.append(sheets.apply_sheet(job.conn, job.store, sid, p["sheet_id"]))
+    elif p.get("sheet_start"):  # pages in sheet order: the first chosen page is sheet N, the next N+1, ...
+        order = sorted(wanted) if wanted is not None else None
+        imported = {sid: pages.get_source(job.conn, sid)["page_index"] for r in results if r.status == "imported" for sid in r.source_ids}
+        for sid, index in sorted(imported.items(), key=lambda kv: kv[1]):
+            number = p["sheet_start"] + (order.index(index) if order is not None else index)
+            sheet_id = sheets.sheet_by_number(job.conn, number)
+            if sheet_id is None:
+                sheet_results.append({"source_id": sid, "error": f"there is no sheet {number}"})
+                continue
+            sheet_results.append({**sheets.apply_sheet(job.conn, job.store, sid, sheet_id), "sheet_number": number})
+    return {"entries": out, "sheets": sheet_results}
+
+
+def _apply_sheet(job: Job) -> Any:
+    return sheets.apply_sheet(job.conn, job.store, job.params["source_id"], job.params["sheet_id"])
 
 
 def _detect(job: Job) -> Any:
@@ -85,10 +104,15 @@ def _headless_recognition(job: Job) -> Any:
     return run
 
 
+def _recut_line(job: Job) -> Any:
+    from handprinter.recognition import refit
+    return refit.recut_line(job.conn, job.store, job.params["line_id"], job.params["text"])
+
+
 def _export_snapshot(job: Job) -> Any:
     p = job.params
     filters = dataset.Filters(tuple(p.get("source_types", ["paper"])), tuple(p.get("style_eras", ["current"])),
-                              tuple(p["sessions"]) if p.get("sessions") else None)
+                              tuple(p["sessions"]) if p.get("sessions") else None, bool(p.get("include_maths", True)))
     config = dataset.SplitConfig(seed=int(p.get("seed", 1234)), holdout_sessions=tuple(p.get("holdout_sessions", [])),
                                  unseen_word_fraction=float(p.get("unseen_word_fraction", 0.1)))
     return dataset.export_snapshot(job.conn, job.store, p.get("name") or "snapshot", p.get("policy", "approved_only"), filters, config, job.progress)
@@ -116,7 +140,7 @@ def _adapter_infer(job: Job) -> Any:
 
 
 def _adapter_train(job: Job) -> Any:
-    return _adapter(job).train()
+    return evaluation.run_training(job.conn, job.store, job.settings, job.id, job.params, job.progress, job.cancelled)
 
 
 HANDLERS: dict[str, Handler] = {
@@ -127,6 +151,8 @@ HANDLERS: dict[str, Handler] = {
     "import_recognition": _import_recognition,
     "headless_recognition": _headless_recognition,
     "export_snapshot": _export_snapshot,
+    "recut_line": _recut_line,
+    "apply_sheet": _apply_sheet,
     "adapter_preflight": _adapter_preflight,
     "adapter_download": _adapter_download,
     "adapter_infer": _adapter_infer,

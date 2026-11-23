@@ -19,10 +19,28 @@ export async function render(root) {
     try {
       const d = await api(`/api/doctor${refresh ? '?refresh=true' : ''}`);
       mount(body, h('div', { class: 'set-grid' },
-        machine(d), recognition(d), adapters(d), storage(d)));
+        appearance(), machine(d), recognition(d), adapters(d), storage(d)));
     } catch (err) { mount(body, errorState(err, () => load(true))); }
   }
   load();
+}
+
+/** Light / dark / follow the device. Stored per device (this browser only). */
+function appearance() {
+  let current = 'auto';
+  try { current = localStorage.getItem('hp-theme') || 'auto'; } catch { /* storage blocked */ }
+  /** @param {string} v */
+  const set = (v) => {
+    try { v === 'auto' ? localStorage.removeItem('hp-theme') : localStorage.setItem('hp-theme', v); } catch { /* storage blocked */ }
+    if (v === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', v);
+  };
+  return h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h2', { text: 'Appearance' })),
+    h('div', { class: 'panel__body stack' },
+      h('div', { class: 'segmented', role: 'radiogroup', 'aria-label': 'Theme' },
+        [['auto', 'Match device'], ['light', 'Light'], ['dark', 'Dark']].map(([v, label]) =>
+          h('label', {}, h('input', { type: 'radio', name: 'theme', value: v, checked: v === current ? true : undefined, onChange: () => set(v) }), h('span', { text: label })))),
+      h('p', { class: 'xs muted', text: 'Saved on this device. Page photos are never recoloured.' })));
 }
 
 /** @param {boolean} ok @param {string} label @param {string} [detail] */
@@ -82,7 +100,13 @@ function storage(d) {
       h('dl', { class: 'facts' },
         h('dt', { text: 'Data directory' }), h('dd', { class: 'mono xs', text: d.data_dir }),
         h('dt', { text: 'Free space' }), h('dd', { text: `${d.disk_free_gb} GB` }),
-        h('dt', { text: 'Network' }), h('dd', { text: d.network.lan_mode ? `LAN mode on ${d.network.host} (token required)` : 'This computer only (127.0.0.1)' })),
+        h('dt', { text: 'Network' }), h('dd', { text: d.network.online ? 'Online through a Cloudflare Tunnel (password required)' : d.network.lan_mode ? `LAN mode on ${d.network.host} (token required)` : 'This computer only (127.0.0.1)' }),
+        d.network.online ? h('dt', { text: 'Web address' }) : null,
+        d.network.online ? h('dd', {}, d.network.public_url ? h('a', { href: d.network.public_url, class: 'mono xs', text: d.network.public_url }) : h('span', { class: 'muted', text: 'starting…' }),
+          d.network.relay && d.network.relay !== 'ok' ? h('div', { class: 'xs badge badge--review', text: `Fixed address not updated: ${d.network.relay}` }) : null,
+          d.network.relay === 'ok' ? h('div', { class: 'xs muted', text: 'Fixed address through your Cloudflare Worker' }) : null) : null),
+      d.network.online || d.network.lan_mode ? h('button', { class: 'btn btn--sm', type: 'button', onClick: async () => { await api('/api/logout', { body: {} }); location.href = '/login'; } }, 'Sign out on this device') : null,
+      d.network.online ? null : h('p', { class: 'xs muted' }, 'To use it from an iPad or phone anywhere, start it with ', h('code', { text: 'scripts\\online.bat' }), '. See ', h('code', { text: 'docs/online.md' }), '.'),
       h('h4', { text: 'Backup' }),
       h('p', { class: 'small' }, 'Stop the app, then run ', h('code', { text: 'python -m handprinter backup D:\\handprinter-backup' }), '. It copies the SQLite database safely plus all images, crops, packages and snapshots. To restore, point ', h('code', { text: 'HANDPRINTER_DATA_DIR' }), ' at the backup folder (or copy it back).'),
       h('p', { class: 'xs muted', text: 'Nothing in the data directory is ever committed to Git.' })));

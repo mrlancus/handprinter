@@ -42,7 +42,27 @@ class Alignment:
 
 
 def tokenize(text: str) -> list[str]:
-    return [t for t in text.split() if t]
+    """Split on whitespace, except inside `$...$` LaTeX maths, which stays one token with its neighbours.
+
+    "so $x + 1$ works" -> ["so", "$x + 1$", "works"]; "($a$)" stays ["($a$)"] as written.
+    An unclosed `$` is treated as an ordinary character.
+    """
+    if text.count("$") < 2:
+        return [t for t in text.split() if t]
+    tokens, cur, in_math = [], [], False
+    last_dollar = text.rfind("$")
+    for i, ch in enumerate(text):
+        if ch == "$" and (in_math or i < last_dollar):
+            in_math = not in_math
+        if ch.isspace() and not in_math:
+            if cur:
+                tokens.append("".join(cur))
+                cur = []
+            continue
+        cur.append(ch)
+    if cur:
+        tokens.append("".join(cur))
+    return tokens
 
 
 def align(text: str, box_widths: list[float]) -> Alignment:

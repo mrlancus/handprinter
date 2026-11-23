@@ -41,7 +41,7 @@ function coverage(cov) {
     h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h2', { text: 'Exportable now' }), h('span', { class: 'xs muted', text: 'approved · unflagged · your handwriting · no marks' })),
       h('div', { class: 'panel__body stack' },
         h('div', { class: 'ds-kpis' },
-          kpi('Words', fmt(words)), kpi('Lines', fmt(cov.exportable.line || 0)), kpi('Distinct words', fmt(cov.word_types)), kpi('Pages', fmt(cov.pages))),
+          kpi('Words', fmt(words)), kpi('Lines', fmt(cov.exportable.line || 0)), kpi('Maths (LaTeX)', fmt(cov.exportable.maths || 0)), kpi('Distinct words', fmt(cov.word_types)), kpi('Pages', fmt(cov.pages))),
         h('div', { class: 'stack' },
           h('div', { class: 'row row--between small' }, h('span', { text: `Pilot target: ${fmt(lo)}–${fmt(hi)} labelled words` }), h('span', { class: 'muted', text: `${Math.min(100, Math.round((words / lo) * 100))}% of the lower bound` })),
           h('div', { class: 'progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': lo, 'aria-valuenow': words, 'aria-label': 'Words toward the pilot target' },
@@ -86,6 +86,7 @@ function snapshotForm(cov, onDone) {
   warn.hidden = true;
   advanced.addEventListener('change', () => { warn.hidden = !advanced.checked; });
   const status = h('div', { role: 'status' });
+  const maths = /** @type {HTMLInputElement} */ (h('input', { type: 'checkbox', checked: true }));
 
   async function submit(/** @type {Event} */ e) {
     e.preventDefault();
@@ -97,11 +98,11 @@ function snapshotForm(cov, onDone) {
       const { job_id } = await api('/api/dataset/snapshots', { body: {
         name: name.value, policy: advanced.checked ? 'include_unreviewed' : 'approved_only', source_types, style_eras, seed: Number(seed.value),
         unseen_word_fraction: Math.max(0, Math.min(50, Number(unseen.value))) / 100,
-        holdout_sessions: holdout.value.split(',').map((s) => s.trim()).filter(Boolean),
+        holdout_sessions: holdout.value.split(',').map((s) => s.trim()).filter(Boolean), include_maths: maths.checked,
       } });
       const job = await trackJob(job_id);
       if (job.status !== 'succeeded') { mount(status, callout(job.error || job.status, 'error')); return; }
-      toast(`Snapshot exported: ${job.result.counts.words} words, ${job.result.counts.lines} lines`);
+      toast(`Snapshot exported: ${job.result.counts.words} words, ${job.result.counts.lines} lines, ${job.result.counts.maths || 0} maths`);
       onDone();
     } catch (err) { mount(status, callout(err instanceof Error ? err.message : String(err), 'error')); }
   }
@@ -112,14 +113,15 @@ function snapshotForm(cov, onDone) {
       h('label', { class: 'field' }, h('span', { text: 'Name' }), name),
       h('fieldset', { class: 'ds-fieldset' }, h('legend', { class: 'label', text: 'Include' }),
         h('div', { class: 'row' }, h('label', { class: 'check' }, paper, 'Paper'), h('label', { class: 'check' }, ipad, 'iPad')),
-        h('div', { class: 'row' }, h('label', { class: 'check' }, current, 'Current style'), h('label', { class: 'check' }, older, 'Older style'))),
+        h('div', { class: 'row' }, h('label', { class: 'check' }, current, 'Current style'), h('label', { class: 'check' }, older, 'Older style')),
+        h('label', { class: 'check' }, maths, 'Maths as LaTeX (separate maths.jsonl; never mixed into words)')),
       h('div', { class: 'row' }, h('label', { class: 'field' }, h('span', { text: 'Split seed' }), seed), h('label', { class: 'field' }, h('span', { text: 'Unseen words %' }), unseen)),
       h('label', { class: 'field' }, h('span', { text: 'Hold out sessions (test only)' }), holdout),
       h('p', { class: 'xs muted', text: '≈80/10/10 train/validation/test, grouped by page, source group and near-duplicates. Words and lines of the same page never cross a split.' }),
       h('details', {}, h('summary', { class: 'small', text: 'Advanced export policy' }),
         h('div', { class: 'stack ds-adv' }, h('label', { class: 'check small' }, advanced, 'Also include unreviewed, unflagged machine proposals'), warn)),
-      h('button', { class: 'btn btn--primary', type: 'submit', disabled: !(cov.exportable.word || cov.exportable.line) && !cov.status.proposed ? true : undefined }, icon('download'), 'Export snapshot'),
-      !(cov.exportable.word || cov.exportable.line) ? h('p', { class: 'xs muted', text: 'Approve examples in Review before exporting.' }) : null,
+      h('button', { class: 'btn btn--primary', type: 'submit', disabled: !(cov.exportable.word || cov.exportable.line || cov.exportable.maths) && !cov.status.proposed ? true : undefined }, icon('download'), 'Export snapshot'),
+      !(cov.exportable.word || cov.exportable.line || cov.exportable.maths) ? h('p', { class: 'xs muted', text: 'Approve examples in Review before exporting.' }) : null,
       status));
 }
 
@@ -127,11 +129,11 @@ function snapshotForm(cov, onDone) {
 function snapshots(snaps) {
   return h('section', { class: 'panel' }, h('div', { class: 'panel__head' }, h('h2', { text: 'Snapshots' }), h('span', { class: 'xs muted', text: 'immutable; experiments reference them by ID' })),
     snaps.length ? h('table', { class: 'table' },
-      h('thead', {}, h('tr', {}, ['Snapshot', 'Policy', 'Words', 'Lines', 'Train / val / test', 'Unseen', 'Warnings', 'Folder'].map((t) => h('th', { text: t })))),
+      h('thead', {}, h('tr', {}, ['Snapshot', 'Policy', 'Words', 'Lines', 'Maths', 'Train / val / test', 'Unseen', 'Warnings', 'Folder'].map((t) => h('th', { text: t })))),
       h('tbody', {}, snaps.map((s) => h('tr', {},
         h('td', {}, h('strong', { text: s.name }), h('div', { class: 'xs muted mono', text: s.id }), h('div', { class: 'xs muted', text: new Date(s.created_at).toLocaleString() })),
         h('td', {}, s.policy === 'approved_only' ? h('span', { class: 'badge badge--ok', text: 'approved only' }) : h('span', { class: 'badge badge--review', text: 'includes unreviewed' })),
-        h('td', { class: 'num', text: fmt(s.counts.words) }), h('td', { class: 'num', text: fmt(s.counts.lines) }),
+        h('td', { class: 'num', text: fmt(s.counts.words) }), h('td', { class: 'num', text: fmt(s.counts.lines) }), h('td', { class: 'num', text: fmt(s.counts.maths || 0) }),
         h('td', { class: 'mono xs', text: ['train', 'val', 'test'].map((k) => s.counts.splits[k] || 0).join(' / ') }),
         h('td', { class: 'num', text: `${fmt(s.counts.unseen_words)} (${s.counts.unseen_vocabulary} types)` }),
         h('td', {}, s.warnings.length ? s.warnings.map((/** @type {string} */ w) => h('div', { class: 'badge badge--review', text: w })) : h('span', { class: 'faint', text: 'none' })),

@@ -10,19 +10,28 @@ Recognition packages are prepared in the Handprinter web app (Sources → "Prepa
 
 ## Steps
 
+Run the `python -m handprinter ...` commands with the repository's virtual environment if plain `python` cannot import `handprinter`: `.venv/Scripts/python` on Windows, `.venv/bin/python` elsewhere.
+
 1. List pending packages:
 
    ```bash
    python -m handprinter recognition pending --json
    ```
 
-   If `$ARGUMENTS` names a package ID, process only that one. If nothing is pending, say so and stop.
+   If `$ARGUMENTS` names a package ID, process only that one.
+
+   If nothing is pending, do not just say so. Run `python -m handprinter recognition status` and tell the user, in plain words:
+   - which data folder you looked in (they can compare it with Settings in the app);
+   - the latest packages and what happened to each: already read and imported (for example by "Run headless" in the app), built with 0 items (everything was already read or approved), or read but not imported (then run `python -m handprinter recognition import <id>` and report it as in step 7);
+   - if there are no packages at all, or the newest is older than they expect, that the app may be using a different data folder or the package build failed (Sources → Recognition packages shows it).
+   Then stop.
 
 2. For each package, read `manifest.json` in its `path` and find the items that have no `results/<item_id>.json` yet.
 
-3. Dispatch the `handwriting-recogniser` subagent over those items in **small chunks of at most 5 items**. Give it the package directory and the exact item IDs. Run at most 2 chunks at a time.
+3. Dispatch the `handwriting-recogniser` subagent over those items in **chunks of at most 5 items**, running **up to 12 chunks at the same time** (send the Agent calls for up to 12 chunks in one message, wait, then send the next batch; if you hit a usage or rate limit, stop and tell the user what is left, running `/recognise` again later carries on). Give each subagent the package directory and its exact item IDs.
    - The subagent is pinned to `model: haiku`. Do not substitute a larger model.
    - If the subagent is unavailable in this session (for example, the file was added mid-session), say so. Then spawn a general agent with `model: haiku`, give it the contents of `.claude/agents/handwriting-recogniser.md` as its instructions, and report that you used this fallback.
+   - After each batch, tell the user in one short line how far you are (e.g. "20 of 64 lines read").
 
 4. Validate the package:
 
@@ -32,9 +41,18 @@ Recognition packages are prepared in the Handprinter web app (Sources → "Prepa
 
 5. For any item that failed validation, dispatch the subagent once more for that item alone. Tell it the validation errors, and tell it to rewrite only that result file. Then validate again.
 
-6. Report to the user:
-   - Per package: how many items succeeded, how many failed (with reasons), and how many are still missing.
-   - That the results are proposals. They still need import ("Import results" in the app, or `python -m handprinter recognition import <package-id>`) and human review.
+6. Import the results into the app (this only adds suggestions; it never overwrites anything the user typed, moved or approved):
+
+   ```bash
+   python -m handprinter recognition import <package-id>
+   python -m handprinter recognition show <package-id>
+   ```
+
+7. Report to the user, briefly and in plain words:
+   - How many lines were read, how many failed (with reasons) and how many are still missing.
+   - A short sample of what was read: up to 8 lines from `show`, copied exactly, marking any with `[needs a look]`.
+   - How many lines had their word boxes re-cut (`lines_refit` in the import output).
+   - That the text is a suggestion: next step is **Check** in the app, which shows each line with doubtful words in amber; they fix any word and approve the line in one tap (Review is for box surgery).
    - Which model you dispatched (the subagent alias, or the fallback).
 
 ## Rules

@@ -3,20 +3,34 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f1ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#161614" media="(prefers-color-scheme: dark)">
+  <script src="/static/js/theme.js"></script>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Handprinter">
   <title>Sign in · Handprinter</title>
+  <link rel="icon" type="image/png" href="/static/icons/icon-32.png">
+  <link rel="apple-touch-icon" href="/static/icons/icon-180.png">
+  <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/base.css">
+  <link rel="stylesheet" href="/static/css/login.css">
   <script type="module" src="/static/js/login.js"></script>
 </head>
-<body>
-  <main class="state state--center">
+<body class="login">
+  <main class="login__card">
+    <img class="login__icon" src="/static/icons/icon-192.png" alt="" width="64" height="64">
     <h1>Handprinter</h1>
-    <p class="muted">LAN access is enabled on this machine. Enter the access token from its <code>.env</code> file.</p>
+    <p class="muted">Enter your password to continue.</p>
     <form id="login" class="stack">
-      <label class="field"><span>Access token</span><input id="token" type="password" autocomplete="current-password" required></label>
-      <button class="btn btn--primary" type="submit">Sign in</button>
-      <p id="error" class="small" role="alert"></p>
+      <label class="field"><span>Password</span>
+        <input id="token" type="password" autocomplete="current-password" autocapitalize="off" autocorrect="off" spellcheck="false" required autofocus>
+      </label>
+      <button id="submit" class="btn btn--primary" type="submit">Sign in</button>
+      <p id="error" class="small login__error" role="alert"></p>
     </form>
+    <p class="xs muted">You stay signed in on this device for 30 days.</p>
   </main>
 </body>
 </html>

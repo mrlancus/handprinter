@@ -1,6 +1,6 @@
 """Recognition via Claude Code: package building, result validation and import."""
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v3"
 SCHEMA_VERSION = "1"
 # Claude vision guidance: ≤1568 px long edge avoids downscaling; ≤8000 px hard limit
 # (2000 px when many images share a request). See docs/architecture.md.
