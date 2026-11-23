@@ -97,6 +97,7 @@ export function sheetsTab(params) {
   if (open) showSheet(open); else showList();
 
   const uploader = uploadWritten(() => showList());  // kept across refreshes so its results stay on screen
+  const refill = refillAll();
 
   async function showList() {
     mount(body, loadingState(2));
@@ -115,6 +116,7 @@ export function sheetsTab(params) {
       } }, icon('plus'), 'New sheet');
       mount(body,
         uploader,
+        refill,
         h('section', { class: 'panel sh-intro stack' },
           h('h2', { text: 'Write out a sheet' }),
           h('p', { class: 'small', text: 'The app picks real words and sentences that cover what your notes are short of: rare letters and letter pairs, capitals, digits, maths, Greek letters and chemistry, plus words you often write. You copy them by hand; because the text is known, nothing needs reading and checking is quick.' }),
@@ -197,6 +199,27 @@ export function sheetsTab(params) {
   }
 
   return body;
+}
+
+/** Redo every uploaded sheet page with the current word cutting (after an update). */
+function refillAll() {
+  const status = h('p', { class: 'small', 'aria-live': 'polite' });
+  const btn = h('button', { class: 'btn', type: 'button', onClick: async () => {
+    btn.setAttribute('disabled', '');
+    status.textContent = 'Working…';
+    try {
+      const { job_id } = await api('/api/sheets/refill', { body: {} });
+      const job = await trackJob(job_id);
+      if (job.status !== 'succeeded') throw new Error(job.error || 'failed');
+      const r = job.result;
+      status.textContent = `Done: ${r.pages} page(s) re-cut, ${r.lines_matched} line(s) filled in from their sheets${r.failed.length ? `; ${r.failed.length} page(s) failed` : ''}. Check them in Check.`;
+    } catch (err) { status.textContent = ''; toast(err instanceof Error ? err.message : String(err), 'error'); }
+    btn.removeAttribute('disabled');
+  } }, icon('refresh'), 'Re-cut all sheet pages');
+  return h('section', { class: 'panel stack' },
+    h('div', { class: 'row row--between' }, h('h2', { text: 'Already uploaded sheets' }), btn),
+    h('p', { class: 'small muted', text: 'After an update that improves word cutting, this fills every uploaded sheet page in again. Boxes and text you typed, moved or approved stay as they are.' }),
+    status);
 }
 
 /** On a page's own view: mark an already-uploaded page as a written-out sheet. @param {string} sourceId @param {() => void} done */

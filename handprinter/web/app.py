@@ -182,6 +182,10 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
     def get_sheet(sheet_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         return sheets.get_sheet(conn, sheet_id)
 
+    @app.post("/api/sheets/refill")
+    def refill_sheets(conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return {"job_id": jobs.enqueue(conn, "refill_sheets", {})}
+
     @app.post("/api/sources/{source_id}/sheet")
     def apply_sheet(source_id: str, body: S.ApplySheetIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         pages.get_source(conn, source_id)

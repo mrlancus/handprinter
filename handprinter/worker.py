@@ -79,6 +79,10 @@ def _apply_sheet(job: Job) -> Any:
     return sheets.apply_sheet(job.conn, job.store, job.params["source_id"], job.params["sheet_id"])
 
 
+def _refill_sheets(job: Job) -> Any:
+    return sheets.refill_all(job.conn, job.store, job.progress)
+
+
 def _detect(job: Job) -> Any:
     source_id = job.params["source_id"]
     out = pages.run_detection(job.conn, job.store, source_id, replace=bool(job.params.get("replace")))
@@ -159,6 +163,7 @@ HANDLERS: dict[str, Handler] = {
     "export_snapshot": _export_snapshot,
     "recut_line": _recut_line,
     "apply_sheet": _apply_sheet,
+    "refill_sheets": _refill_sheets,
     "adapter_preflight": _adapter_preflight,
     "adapter_download": _adapter_download,
     "adapter_infer": _adapter_infer,

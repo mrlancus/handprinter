@@ -249,8 +249,12 @@ def thin_rule_pixels(mask: np.ndarray) -> np.ndarray:
         up[y] = (up[y - 1] + 1) * mask[y] if y else mask[y]
     for y in range(h - 1, -1, -1):
         down[y] = (down[y + 1] + 1) * mask[y] if y < h - 1 else mask[y]
-    thin = mask & (up + down - 1 <= max(3, round(0.05 * h)))  # a few pixels tall where it is
-    long_piece, part = max(8, int(0.6 * h)), max(6, int(0.3 * h))
+    # Lengths are measured against the writing, not the box: a box may be tall (a tail, a fraction) while
+    # the letters, and so the gaps between words, stay small. Line height is about 3.5x the letter bodies.
+    b0, b1, _ = _core(mask, 0, 0, w, h)
+    ref = min(h, max(12, 3.5 * (b1 - b0)))
+    thin = mask & (up + down - 1 <= max(3, round(0.05 * ref)))  # a few pixels tall where it is
+    long_piece, part = max(8, int(0.6 * ref)), max(6, int(0.3 * ref))
     cols = np.flatnonzero(mask.any(axis=0))
     x0, x1 = int(cols[0]), int(cols[-1]) + 1
     bins = np.linspace(x0, x1, 11).astype(int)

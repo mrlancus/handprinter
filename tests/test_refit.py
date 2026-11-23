@@ -360,3 +360,28 @@ def test_set_symbols_are_spaced_operators():
 
     assert is_spaced("$A \\cup B$,") and written_len("$A \\cup B$,") == 5
     assert not is_spaced("$\\infty$")
+
+
+def test_a_ruled_line_is_found_in_a_tall_line_box_too():
+    """A tail or fraction makes the box tall; the gaps between words are measured against the letters."""
+    from handprinter import detect
+
+    h, w = 110, 1000
+    mask = np.zeros((h, w), dtype=bool)
+    x, words = 10, []
+    for g in [40, 34, 45, 36, 50, 38, 0]:
+        words.append((x, x + 100))
+        for sx in range(x, x + 100, 10):
+            mask[40:62, sx:sx + 3] = True  # letters about 22 px tall
+        x += 100 + g
+    mask[60:62, 10:x] = True  # the ruled line at the foot of the letters
+    mask[62:105, 300:304] = True  # one long tail makes the box tall
+    cleaned = mask & ~detect.thin_rule_pixels(mask)
+    for (_a, b), (c, _d) in zip(words, words[1:]):
+        assert not cleaned[:, b + 1:c - 1].any()
+
+
+def test_an_explicit_latex_space_keeps_the_maths_together():
+    from handprinter.recognition.refit import is_spaced, written_len
+
+    assert is_spaced("$\\forall x \\, \\exists y$") and written_len("$\\forall x \\, \\exists y$") == 5
