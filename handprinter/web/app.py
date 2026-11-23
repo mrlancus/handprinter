@@ -310,9 +310,13 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
 
     @app.delete("/api/sources/{source_id}")
     def delete_source(source_id: str, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        """Remove a page from the app: it and its boxes disappear from Sources, Check, Review and future
+        exports. The original file stays on disk; the same file can be uploaded again later."""
         pages.get_source(conn, source_id)
-        conn.execute("UPDATE sources SET deleted = 1 WHERE id = ?", (source_id,))
-        return {"ok": True, "note": "hidden from the app; files are kept on disk"}
+        with transaction(conn):
+            conn.execute("UPDATE sources SET deleted = 1 WHERE id = ?", (source_id,))
+            n = conn.execute("UPDATE regions SET deleted = 1 WHERE source_id = ? AND deleted = 0", (source_id,)).rowcount
+        return {"ok": True, "regions": n, "note": "removed from the app; the original file is kept on disk"}
 
     # ---------- regions ----------
     @app.get("/api/sources/{source_id}/regions")

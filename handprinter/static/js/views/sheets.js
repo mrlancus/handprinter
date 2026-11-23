@@ -17,6 +17,71 @@ function sheetLine(text) {
   return el;
 }
 
+/**
+ * Upload written sheets in one go: a PDF (choose its pages) or several photos, the first being sheet N,
+ * the next N+1, and so on. Each page is filled in from its sheet.
+ * @param {() => void} done
+ */
+function uploadWritten(done) {
+  const file = /** @type {HTMLInputElement} */ (h('input', { type: 'file', multiple: true, accept: '.pdf,application/pdf,.jpg,.jpeg,.png,.webp,.heic,.heif,image/*' }));
+  const pagesIn = /** @type {HTMLInputElement} */ (h('input', { type: 'text', inputmode: 'numeric', placeholder: 'all, or e.g. 1-7', maxlength: 200 }));
+  const first = /** @type {HTMLInputElement} */ (h('input', { type: 'number', inputmode: 'numeric', min: '1', value: '1001' }));
+  const kind = /** @type {HTMLSelectElement} */ (h('select', {}, h('option', { value: 'ipad' }, 'iPad (e.g. GoodNotes)'), h('option', { value: 'paper' }, 'Paper photos')));
+  const out = h('ul', { class: 'upload-list', role: 'list', 'aria-live': 'polite' });
+  const go = h('button', { class: 'btn btn--primary', type: 'button', onClick: start }, icon('upload'), 'Upload and fill in');
+
+  async function start() {
+    const files = Array.from(file.files || []);
+    const n = Number(first.value);
+    if (!files.length) { toast('Choose a PDF or photos first.', 'error'); return; }
+    if (!n) { toast('Give the sheet number of the first page (e.g. 1001).', 'error'); return; }
+    const spec = pagesIn.value.trim();
+    if (spec && !/^\s*\d+(\s*-\s*\d+)?(\s*,\s*\d+(\s*-\s*\d+)?)*\s*,?\s*$/.test(spec)) { toast('Pages: use numbers and ranges, e.g. 1-7', 'error'); return; }
+    go.setAttribute('disabled', '');
+    let next = n;  // photos: one sheet each, in the order chosen; a PDF: its chosen pages in order
+    try {
+      for (const f of files) {
+        const isPdf = /\.pdf$/i.test(f.name) || f.type === 'application/pdf';
+        const state = h('span', { class: 'xs muted', text: 'Uploading…' });
+        const detail = h('ul', { class: 'upload-entries' });
+        out.prepend(h('li', { class: 'upload-item' }, h('div', { class: 'row row--between' }, h('span', { class: 'upload-item__name', text: f.name }), state), detail));
+        const batch = await api('/api/batches', { body: { source_type: kind.value, note: `Writing sheets from ${next}`, pages: isPdf ? (spec || null) : null, sheet_start: next } });
+        const res = await upload(`/api/batches/${batch.batch_id}/files`, f, () => {});
+        if (res.status === 'rejected') { state.textContent = `Rejected: ${res.detail}`; state.className = 'xs badge badge--error'; continue; }
+        state.textContent = 'Filling in from the sheets…';
+        const job = await trackJob(res.job_id);
+        if (job.status !== 'succeeded') { state.textContent = `Failed: ${job.error || job.status}`; state.className = 'xs badge badge--error'; continue; }
+        const sheetsDone = job.result.sheets || [];
+        const notNew = job.result.entries.filter((/** @type {any} */ e) => e.status !== 'imported');
+        state.textContent = `${sheetsDone.filter((/** @type {any} */ r) => !r.error).length} page(s) filled in`;
+        state.className = 'xs badge badge--ok';
+        mount(detail, sheetsDone.map((/** @type {any} */ r) => h('li', {},
+          r.error ? h('span', { class: 'badge badge--error', text: r.error })
+            : h('span', {}, h('strong', { text: `Sheet ${r.sheet_number}` }), h('span', { class: 'xs muted', text: ` — ${summaryText(r)} ` }),
+              h('a', { class: 'xs', href: `#/check?source=${r.source_id}`, text: 'Check →' })))),
+          notNew.map((/** @type {any} */ e) => h('li', { class: 'xs muted', text: `${e.status}: ${e.detail}` })));
+        const numbers = sheetsDone.filter((/** @type {any} */ r) => r.sheet_number).map((/** @type {any} */ r) => r.sheet_number);
+        next = numbers.length ? Math.max(...numbers) + 1 : next + (isPdf ? 0 : 1);
+      }
+      window.dispatchEvent(new CustomEvent('hp:changed'));
+      first.value = String(next);
+      done();
+    } catch (err) { toast(err instanceof Error ? err.message : String(err), 'error'); }
+    finally { go.removeAttribute('disabled'); }
+  }
+
+  return h('section', { class: 'panel sh-intro stack' },
+    h('h2', { text: 'Upload written sheets' }),
+    h('p', { class: 'small', text: 'One PDF of your sheet pages (choose which pages), or photos. The first page is the sheet number you give, the next page the next sheet, and so on. Each page is filled in from its sheet; then approve it in Check.' }),
+    h('div', { class: 'row sh-upload' },
+      h('label', { class: 'field' }, h('span', { text: 'PDF or photos' }), file),
+      h('label', { class: 'field' }, h('span', { text: 'PDF pages' }), pagesIn),
+      h('label', { class: 'field' }, h('span', { text: 'First page is sheet' }), first),
+      h('label', { class: 'field' }, h('span', { text: 'Written on' }), kind),
+      go),
+    out);
+}
+
 /** @param {any} summary */
 function summaryText(summary) {
   const parts = [`${summary.matched} of ${summary.sheet_lines} lines matched`];
@@ -30,6 +95,8 @@ export function sheetsTab(params) {
   const body = h('div', { class: 'page-body sh' }, loadingState(2));
   const open = params.get('sheet');
   if (open) showSheet(open); else showList();
+
+  const uploader = uploadWritten(() => showList());  // kept across refreshes so its results stay on screen
 
   async function showList() {
     mount(body, loadingState(2));
@@ -47,6 +114,7 @@ export function sheetsTab(params) {
         } catch (err) { create.removeAttribute('disabled'); toast(err instanceof Error ? err.message : String(err), 'error'); }
       } }, icon('plus'), 'New sheet');
       mount(body,
+        uploader,
         h('section', { class: 'panel sh-intro stack' },
           h('h2', { text: 'Write out a sheet' }),
           h('p', { class: 'small', text: 'The app picks real words and sentences that cover what your notes are short of: rare letters and letter pairs, capitals, digits, maths, Greek letters and chemistry, plus words you often write. You copy them by hand; because the text is known, nothing needs reading and checking is quick.' }),

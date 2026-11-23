@@ -137,3 +137,29 @@ def test_lan_mode_requires_sign_in_for_remote_clients(tmp_path):
     # a loopback client with a foreign Host (DNS rebinding) is still refused
     local = TestClient(create_app(s), client=("127.0.0.1", 50000))
     assert local.get("/api/status", headers={"host": "evil.example"}).status_code == 400
+
+
+def _upload(client, settings, data, name, **batch):
+    bid = client.post("/api/batches", json=batch).json()["batch_id"]
+    assert client.post(f"/api/batches/{bid}/files", files={"file": (name, data)}).json()["status"] == "queued"
+    drain(settings)
+
+
+def test_deleting_a_page_removes_it_everywhere_and_it_can_come_back(client, settings):
+    data = encode(page(["the quick brown fox", "jumps over the lazy dog"], ruling=False))
+    _upload(client, settings, data, "p.png")
+    sid = client.get("/api/sources").json()["items"][0]["id"]
+    assert client.get("/api/check").json()["source"]["id"] == sid
+    assert client.delete(f"/api/sources/{sid}").json()["regions"] > 0
+    assert client.get("/api/sources").json()["total"] == 0
+    assert client.get("/api/check").json()["source"] is None
+    assert client.get("/api/status").json()["counts"]["needs_review"] == 0
+    _upload(client, settings, data, "p.png")  # the same file again is a new page, not a duplicate
+    items = client.get("/api/sources").json()["items"]
+    assert len(items) == 1 and items[0]["id"] != sid
+
+
+def test_written_sheet_upload_needs_a_real_sheet_number_and_valid_pages(client):
+    assert client.post("/api/batches", json={"sheet_start": 99999}).status_code == 422
+    assert client.post("/api/batches", json={"pages": "5-2"}).status_code == 422
+    assert client.post("/api/batches", json={"pages": "1-7", "sheet_start": 1001}).status_code == 200
