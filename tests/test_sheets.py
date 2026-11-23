@@ -152,3 +152,20 @@ def test_redetecting_a_sheet_page_keeps_its_sheet_text(conn, store, import_bytes
     job = jobs.get(conn, job_id)
     assert job["status"] == "succeeded", job
     assert _texts(conn, src)[0] == LINES  # fresh boxes, the sheet's text again
+
+
+def test_refilling_all_sheet_pages_redoes_machine_cuts_and_keeps_your_edits(conn, store, import_bytes):
+    sheet_id = _sheet(conn, LINES)
+    a = import_bytes(encode(page(LINES, ruling=False)))[0].source_ids[0]
+    b = import_bytes(encode(page(LINES, ruling=False, seed_shift=7)))[0].source_ids[0]
+    sheets.apply_sheet(conn, store, a, sheet_id)
+    sheets.apply_sheet(conn, store, b, sheet_id)
+    _, rows = _texts(conn, a)
+    review.human_edit(conn, rows[0]["id"], {"text": "my own reading"})
+    for w in review._line_words(conn, rows[1]["id"]):  # machine word boxes made by an older version
+        review._write(conn, review.get_region(conn, w["id"]), {"deleted": 1}, "machine", "old")
+    out = sheets.refill_all(conn, store)
+    assert out["pages"] == 2 and not out["failed"]
+    texts, rows = _texts(conn, a)
+    assert texts[0] == "my own reading" and texts[1:] == LINES[1:]
+    assert [w["text"] for w in review._line_words(conn, rows[1]["id"])] == LINES[1].split()

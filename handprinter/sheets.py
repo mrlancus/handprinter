@@ -304,17 +304,19 @@ def match_lines(widths: list[float], texts: list[str], word_widths: list[list[fl
 def apply_sheet(conn: sqlite3.Connection, store: Store, source_id: str, sheet_id: str) -> dict[str, Any]:
     """Label an uploaded sheet page from its sheet: match lines in order, cut words from the known text.
 
-    Only open lines without your own text are used; anything you typed or approved is left alone.
+    Only open lines without your own text are labelled; anything you typed or approved is left alone
+    (but still holds its place in the order).
     Matched lines become suggestions to approve in Check; unmatched ones are flagged.
     """
     sheet = get_sheet(conn, sheet_id)
     source = pages.get_source(conn, source_id)
     if source["detection_status"] == "none":
         pages.run_detection(conn, store, source_id)
+    # Every written line takes part in the matching, so the order holds; only open lines without your
+    # own text are labelled. (Leaving your edited lines out would shift every line below them.)
     rows = conn.execute(
         """SELECT * FROM regions WHERE source_id = ? AND deleted = 0 AND kind = 'line' AND cls IN ('handwriting', 'uncertain', 'equation')
-           AND status IN ('unprocessed', 'proposed', 'needs_review') AND (text_origin IS NULL OR text_origin = 'machine')""",
-        (source_id,)).fetchall()
+           AND status != 'excluded'""", (source_id,)).fetchall()
     lines = sorted((review.get_region(conn, r["id"]) for r in rows), key=lambda r: (r["y"] + r["h"] / 2, r["x"]))
     ink = refit.LineInk(conn, store)
     lines = _join_rows(conn, ink, source, lines, sheet_id)
@@ -333,6 +335,8 @@ def apply_sheet(conn: sqlite3.Connection, store: Store, source_id: str, sheet_id
             if li is None:
                 continue
             line = review.get_region(conn, lines[li]["id"])
+            if line["status"] not in ("unprocessed", "proposed", "needs_review") or line["text_origin"] not in (None, "machine"):
+                continue  # yours: kept as it is
             if pj is None:
                 review._write(conn, line, {"flags": sorted(set(line["flags"]) | {"sheet_unmatched"}), "status": "needs_review",
                                            "review_reason": f"not matched to sheet {sheet['number']}: extra writing, or a sheet line was skipped"},
@@ -346,6 +350,28 @@ def apply_sheet(conn: sqlite3.Connection, store: Store, source_id: str, sheet_id
         conn.execute("INSERT OR REPLACE INTO sheet_pages (source_id, sheet_id, applied_at, summary) VALUES (?,?,?,?)",
                      (source_id, sheet_id, now_iso(), json.dumps(summary)))
     return {"source_id": source_id, "sheet_id": sheet_id, "sheet_number": sheet["number"], **summary}
+
+
+def refill_all(conn: sqlite3.Connection, store: Store, progress: Any = None) -> dict[str, Any]:
+    """Fill every page labelled from a sheet in again (after the word cutting improved).
+
+    Same as "Fill in from sheet" on each page: only untouched machine boxes and text are redone;
+    anything you typed, moved or approved stays.
+    """
+    rows = conn.execute("SELECT p.source_id, p.sheet_id FROM sheet_pages p JOIN sources s ON s.id = p.source_id "
+                        "WHERE s.deleted = 0 ORDER BY s.created_at").fetchall()
+    out = {"pages": 0, "lines_matched": 0, "failed": []}
+    for i, r in enumerate(rows):
+        if progress:
+            progress(i / max(1, len(rows)), f"page {i + 1} of {len(rows)}")
+        try:
+            res = apply_sheet(conn, store, r["source_id"], r["sheet_id"])
+        except Exception as exc:  # one bad page must not stop the rest
+            out["failed"].append({"source_id": r["source_id"], "error": str(exc)[:200]})
+            continue
+        out["pages"] += 1
+        out["lines_matched"] += res["matched"]
+    return out
 
 
 def _untouched(conn: sqlite3.Connection, region: dict[str, Any]) -> bool:

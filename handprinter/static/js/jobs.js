@@ -5,7 +5,7 @@ import { icon } from './components/icons.js';
 
 const KIND_LABEL = /** @type {Record<string, string>} */ ({
   import_upload: 'Import', detect: 'Detect regions', process: 'Apply processing', build_recognition: 'Build recognition package',
-  import_recognition: 'Import recognition results', headless_recognition: 'Run recogniser (headless)', export_snapshot: 'Export dataset', recut_line: 'Re-cut word boxes', apply_sheet: 'Label writing sheet',
+  import_recognition: 'Import recognition results', headless_recognition: 'Run recogniser (headless)', export_snapshot: 'Export dataset', recut_line: 'Re-cut word boxes', apply_sheet: 'Label writing sheet', refill_sheets: 'Re-cut all sheet pages',
   adapter_preflight: 'Model preflight', adapter_download: 'Model download', adapter_infer: 'Generate', adapter_train: 'Train',
 });
 export const jobLabel = (/** @type {string} */ kind) => KIND_LABEL[kind] || kind;

@@ -166,13 +166,14 @@ def maths_width(src: str) -> float:
     frac = re.compile(r"\\frac\{([^{}]*)\}\{([^{}]*)\}")
     while frac.search(src):
         src = frac.sub(lambda mm: "x" * (max(len(mm.group(1)), len(mm.group(2))) + 1), src)
-    src = re.sub(r"\\(left|right|mathbf|mathrm|text|operatorname|vec|[,;!]|quad)", "", src)
+    gaps = len(re.findall(r"\\(?:[,;:]|quad|qquad)", src))  # an explicit space is about a letter wide
+    src = re.sub(r"\\(left|right|mathbf|mathrm|text|operatorname|vec|[,;:!]|qquad|quad)", "", src)
     # a relation or operator (not one in a power or index, like H⁺) is written with space around it
     src = re.sub(OPERATOR_COMMANDS, "=", src)
     src = re.sub(r"\\[a-zA-Z]+", "x", src)
     ops = len(re.findall(r"[=+<>-]", re.sub(r"[\^_](\{[^{}]*\}|\S)", "", src)))
     small = sum(len(re.sub(r"[{}\s]", "", a or b)) for a, b in re.findall(r"[\^_](?:\{([^{}]*)\}|(\S))", src))
-    return max(1.0, len(re.sub(r"[{}\s^_]", "", src)) - 0.5 * small + ops)
+    return max(1.0, len(re.sub(r"[{}\s^_]", "", src)) - 0.5 * small + ops + gaps)
 
 
 def maths_len(src: str) -> int:
@@ -180,10 +181,11 @@ def maths_len(src: str) -> int:
 
 
 def is_spaced(token: str) -> bool:
-    """Maths written with space inside it: around = and other operators, around a fraction or an integral."""
+    """Maths written with space inside it: around = and other operators, around a fraction or an integral,
+    or where the LaTeX asks for a space (`\\,`, `\\quad`)."""
     for mm in re.finditer(r"\$([^$]*)\$", token):
         body = re.sub(r"[\^_](\{[^{}]*\}|\S)", "", re.sub(OPERATOR_COMMANDS, "=", mm.group(1)))
-        if re.search(r"[=+<>-]|\\(frac|int|sum|prod)(?![a-zA-Z])", body):
+        if re.search(r"[=+<>-]|\\(frac|int|sum|prod|quad|qquad)(?![a-zA-Z])|\\[,;:]", body):
             return True
     return False
 
