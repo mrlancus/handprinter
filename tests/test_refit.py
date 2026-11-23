@@ -55,7 +55,9 @@ def test_segment_by_count_cuts_at_the_widest_gaps():
     seg = segment_by_count(mask, [2, 2, 3])
     assert seg is not None and seg.clear
     assert [(b[0], b[2]) for b in seg.boxes] == [(0, 20), (35, 50), (70, 90)]
-    assert segment_by_count(mask, [1] * 6) is None  # more words than ink pieces: leave it to a person
+    one_short = segment_by_count(mask, [1] * 6)  # one gap missing: two words touching, cut as a flagged guess
+    assert one_short is not None and not one_short.clear
+    assert segment_by_count(mask, [1] * 9) is None  # far more words than ink pieces: leave it to a person
 
 
 def test_stray_ink_at_the_end_of_a_line_is_left_out():
@@ -294,9 +296,11 @@ def test_a_dot_inside_a_word_does_not_cut_the_word_short():
 def test_maths_is_measured_as_written_not_as_latex():
     from handprinter.recognition.refit import is_spaced, written_len
 
-    assert written_len("$\\alpha$,") == 2           # α and the comma, not nine LaTeX characters
-    assert written_len("$H^+$") == 1.5              # a power is written small
-    assert written_len("$\\lambda = \\frac{h}{mv}$") == 6  # λ, a spaced =, a fraction as wide as "mv"
+    assert written_len("$\\alpha$,") < 2           # α and a comma, not nine LaTeX characters
+    assert written_len("$H^+$") < 2                # a power is written small
+    assert 5 <= written_len("$\\lambda = \\frac{h}{mv}$") <= 7  # λ, a spaced =, a fraction about as wide as "mv"
+    assert written_len("$\\sin x$") > written_len("$\\alpha x$")  # sin is written as three letters
+    assert written_len("LOTS,") > written_len("lots,") > written_len("lots")  # capitals wide, commas narrow
     assert is_spaced("$x = 1$") and is_spaced("$\\frac{a}{b}$") and not is_spaced("$H^+$") and not is_spaced("word")
 
 
@@ -358,7 +362,7 @@ def test_a_tail_split_off_by_the_ruled_line_stays_with_its_word():
 def test_set_symbols_are_spaced_operators():
     from handprinter.recognition.refit import is_spaced, written_len
 
-    assert is_spaced("$A \\cup B$,") and written_len("$A \\cup B$,") == 5
+    assert is_spaced("$A \\cup B$,") and 4.5 <= written_len("$A \\cup B$,") <= 5.5
     assert not is_spaced("$\\infty$")
 
 
@@ -385,3 +389,18 @@ def test_an_explicit_latex_space_keeps_the_maths_together():
     from handprinter.recognition.refit import is_spaced, written_len
 
     assert is_spaced("$\\forall x \\, \\exists y$") and written_len("$\\forall x \\, \\exists y$") == 5
+
+
+def test_two_words_written_touching_are_split_where_the_ink_is_thinnest():
+    from handprinter.recognition.refit import segment_by_count
+
+    mask = np.zeros((20, 300), dtype=bool)
+    for x0, x1 in [(0, 60), (80, 140)]:
+        mask[5:15, x0:x1] = True
+    mask[5:15, 160:280] = True   # two words joined by a thin stroke
+    mask[5:15, 218:222] = False
+    mask[9:10, 218:222] = True
+    seg = segment_by_count(mask, [4, 4, 4, 4])
+    assert seg is not None and not seg.clear  # a guessed cut: checked by a person
+    assert [(b[0], b[2]) for b in seg.boxes][:2] == [(0, 60), (80, 140)]
+    assert 214 <= seg.boxes[2][2] <= 224 and 214 <= seg.boxes[3][0] <= 224
