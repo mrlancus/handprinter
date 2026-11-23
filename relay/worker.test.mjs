@@ -56,3 +56,28 @@ test('redirects to the tunnel address are rewritten to stay on the relay', async
   const res = await w.fetch(new Request('https://hp.me.workers.dev/'), e);
   assert.equal(res.headers.get('location'), '/login');
 });
+
+
+test('works the same with a Durable Object instead of KV', async () => {
+  const mod = await import(`./worker.js?${Math.random()}`);
+  const objects = new Map();
+  const STATE = {
+    idFromName: (n) => n,
+    get: (id) => {
+      if (!objects.has(id)) {
+        const mem = new Map();
+        objects.set(id, new mod.RelayState({ storage: { get: async (k) => mem.get(k), put: async (k, v) => { mem.set(k, v); } } }));
+      }
+      const obj = objects.get(id);
+      return { fetch: (url, init) => obj.fetch(new Request(url, init)) };
+    },
+  };
+  const e = { RELAY_SECRET: 's3cret-value', STATE };
+  assert.equal((await mod.default.fetch(new Request('https://hp.me.workers.dev/'), e)).status, 503);
+  assert.equal((await mod.default.fetch(register('https://abc-def.trycloudflare.com', 's3cret-value'), e)).status, 200);
+  let seen;
+  globalThis.fetch = async (url) => { seen = String(url); return new Response('ok'); };
+  const fresh2 = (await import(`./worker.js?${Math.random()}`)).default; // another isolate: must read the stored address
+  assert.equal((await fresh2.fetch(new Request('https://hp.me.workers.dev/x'), e)).status, 200);
+  assert.equal(seen, 'https://abc-def.trycloudflare.com/x');
+});

@@ -5,8 +5,9 @@
 // The Worker forwards every other request there, unchanged, so the password sign-in works as
 // before. When the PC is off it shows a short "not running" page instead of a broken link.
 //
-// Bindings (Cloudflare dashboard -> the Worker -> Settings):
-//   RELAY         KV namespace (stores the current tunnel address)
+// Bindings (one of the two stores, plus the secret):
+//   STATE         Durable Object namespace of class RelayState (preferred: consistent everywhere at once)
+//   RELAY         or a KV namespace (simpler to set up by hand in the dashboard; changes can take a minute)
 //   RELAY_SECRET  secret text, the same value as HANDPRINTER_RELAY_SECRET in the PC's .env
 
 const KEY = 'origin';
@@ -32,6 +33,30 @@ function page(status, title, body) {
 const offline = () => page(503, 'Handprinter is not running',
   'Your PC is off, asleep, or Handprinter is not started. Start it on the PC (double-click Handprinter.bat), wait a few seconds, then reload this page.');
 
+/** Where the current tunnel address is kept: a Durable Object if bound, else KV. */
+function store(env) {
+  if (env.STATE) {
+    const stub = env.STATE.get(env.STATE.idFromName(KEY));
+    return {
+      get: async () => (await (await stub.fetch('https://state/origin')).text()) || null,
+      put: async (/** @type {string} */ url) => { await stub.fetch('https://state/origin', { method: 'PUT', body: url }); },
+    };
+  }
+  return { get: () => env.RELAY.get(KEY), put: (/** @type {string} */ url) => env.RELAY.put(KEY, url) };
+}
+
+/** Durable Object holding the one current tunnel address (strongly consistent). */
+export class RelayState {
+  constructor(state) { this.state = state; }
+  async fetch(request) {
+    if (request.method === 'PUT') {
+      await this.state.storage.put(KEY, await request.text());
+      return new Response('ok');
+    }
+    return new Response((await this.state.storage.get(KEY)) || '');
+  }
+}
+
 async function register(request, env) {
   if (request.method !== 'POST') return new Response('method not allowed', { status: 405 });
   const auth = request.headers.get('authorization') || '';
@@ -39,14 +64,14 @@ async function register(request, env) {
   let url;
   try { ({ url } = await request.json()); } catch { return new Response('bad request', { status: 400 }); }
   if (typeof url !== 'string' || !TUNNEL.test(url)) return new Response('not a quick tunnel address', { status: 400 });
-  await env.RELAY.put(KEY, url);
+  await store(env).put(url);
   cached = { url, at: Date.now() };
   return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
 }
 
 async function origin(env) {
   if (cached.url && Date.now() - cached.at < CACHE_MS) return cached.url;
-  const url = await env.RELAY.get(KEY);
+  const url = await store(env).get();
   cached = { url, at: Date.now() };
   return url;
 }

@@ -42,7 +42,9 @@ Handprinter starts online, your PC tells the Worker its new quick address, and t
 every request through to it. Your password works as before. When the PC is off, that address
 shows "Handprinter is not running" instead of an error.
 
-One-time setup (about 10 minutes, all in the browser):
+With a Cloudflare API token (Workers Scripts: Edit) and account id in the environment, `python scripts/deploy_relay.py` does steps 3-7 for you (it uses a Durable Object instead of KV and prints the two `.env` lines); `--update` redeploys a changed `worker.js` and keeps the secret.
+
+One-time setup by hand (about 10 minutes, all in the browser):
 
 1. Make a free account at **dash.cloudflare.com** (no domain needed).
 2. Make a secret on your PC (any long random text). In a terminal in the Handprinter folder:
