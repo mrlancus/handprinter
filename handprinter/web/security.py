@@ -136,7 +136,13 @@ def make_guard(settings: Settings, request_token: str, extra_hosts: set[str]) ->
         response.headers.setdefault("x-content-type-options", "nosniff")
         response.headers.setdefault("referrer-policy", "no-referrer")
         response.headers.setdefault("x-frame-options", "DENY")
-        if settings.online and not request.url.path.startswith("/static/"):
+        if request.url.path.startswith("/static/"):
+            # Always ask whether a newer file exists (a cheap 304 when nothing changed), so an update of
+            # the app is picked up on the next load instead of the browser running old scripts for hours.
+            response.headers.setdefault("cache-control", "no-cache")
+            if settings.online:
+                response.headers.setdefault("cdn-cache-control", "no-store")  # nor kept at Cloudflare between updates
+        elif settings.online:
             # Personal data: never stored by Cloudflare or other shared caches.
             response.headers["cache-control"] = response.headers.get("cache-control", "no-store").replace("public", "private")
             response.headers.setdefault("cdn-cache-control", "no-store")

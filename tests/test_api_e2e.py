@@ -163,3 +163,8 @@ def test_written_sheet_upload_needs_a_real_sheet_number_and_valid_pages(client):
     assert client.post("/api/batches", json={"sheet_start": 99999}).status_code == 422
     assert client.post("/api/batches", json={"pages": "5-2"}).status_code == 422
     assert client.post("/api/batches", json={"pages": "1-7", "sheet_start": 1001}).status_code == 200
+
+
+def test_app_files_are_revalidated_so_updates_show_up(client):
+    r = client.get("/static/js/app.js")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"

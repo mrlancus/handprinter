@@ -245,3 +245,40 @@ def test_a_big_heading_and_small_notes_are_each_read_at_their_own_size():
     heading = found.lines[0]
     assert len(heading.words) == 3 and heading.box.h > 60
     assert sorted(len(l.words) for l in found.lines[1:]) == sorted(len(t.split()) for t in small)
+
+
+def test_a_faint_ruled_line_through_the_writing_does_not_glue_words_together():
+    """iPad ruled paper: a faint, slightly sloped line runs through the letters (seen on a real GoodNotes page)."""
+    from PIL import Image, ImageDraw
+
+    from handprinter import detect
+    from tests.fixtures import _font
+
+    words = ["Twelve", "boxing", "wizards", "jumped", "over", "the", "fence"]
+    img = Image.new("L", (1500, 110), 250)
+    d = ImageDraw.Draw(img)
+    x = 20
+    for w in words:
+        d.text((x, 20), w, fill=30, font=_font(44))
+        x += int(d.textlength(w, font=_font(44))) + 45
+    d.line([(0, 62), (1500, 64)], fill=200, width=2)  # faint ruling across the whole line, 2 px drop over the width
+    mask = detect.ink_mask(np.asarray(img, dtype=np.float32))
+    mask[detect.ruled_rows(mask, 0.6)] = False
+    glued = segment_by_count(mask, [len(w) for w in words])
+    cleaned = mask & ~detect.thin_rule_pixels(mask)
+    seg = segment_by_count(cleaned, [len(w) for w in words])
+    assert seg is not None and seg.clear and len(seg.boxes) == len(words)
+    assert glued is None or not glued.clear  # without the filter the words are glued by the line
+
+
+def test_thin_rule_filter_leaves_plain_writing_alone():
+    from PIL import Image
+
+    from handprinter import detect
+    from tests.fixtures import page
+
+    img = page(["the quick brown fox jumps over", "minimum illumination"], ruling=False).convert("L")
+    gray = np.asarray(img, dtype=np.float32)
+    for y0 in (110, 260):
+        m = detect.ink_mask(gray[y0:y0 + 80, 60:1150])
+        assert not detect.thin_rule_pixels(m).any()

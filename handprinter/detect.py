@@ -228,6 +228,39 @@ def ruled_rows(mask: np.ndarray, min_run: float = 0.3) -> np.ndarray:
     return out
 
 
+def thin_rule_pixels(mask: np.ndarray) -> np.ndarray:
+    """Pixels of a thin horizontal rule running through writing (e.g. the ruled line on an iPad page).
+
+    Unlike `ruled_rows`, the rule may be faint, slightly sloped and broken: next to letters the
+    paper looks darker, so a faint rule drops out of the ink mask there, and what is left are
+    thin level pieces in the gaps between words, which glue the words together. A rule is a
+    3-row band holding long, thin pieces (each at least 0.6x the box height) that add up to a
+    quarter of the width; joins in joined-up writing are far shorter. Only those thin pieces
+    are returned, so letters keep their ink.
+    """
+    h, w = mask.shape
+    out = np.zeros_like(mask)
+    if h < 4 or w < 20 or not mask.any():
+        return out
+    up = np.zeros((h, w), dtype=np.int32)
+    down = np.zeros((h, w), dtype=np.int32)
+    for y in range(h):
+        up[y] = (up[y - 1] + 1) * mask[y] if y else mask[y]
+    for y in range(h - 1, -1, -1):
+        down[y] = (down[y + 1] + 1) * mask[y] if y < h - 1 else mask[y]
+    thin = mask & (up + down - 1 <= max(3, round(0.05 * h)))  # a few pixels tall where it is
+    long_piece, part = max(8, int(0.6 * h)), max(6, int(0.3 * h))
+    for y in range(1, h - 1):
+        band = thin[y - 1:y + 2].any(axis=0)
+        if band.sum() < 0.25 * w:
+            continue
+        pieces = [(a, b) for a, b in _merge_runs(_runs(band, min_len=1), max_gap=2) if b - a >= part]
+        if sum(b - a for a, b in pieces if b - a >= long_piece) >= 0.25 * w:
+            for a, b in pieces:
+                out[y - 1:y + 2, a:b] |= thin[y - 1:y + 2, a:b]
+    return out
+
+
 def vertical_rule_columns(mask: np.ndarray, min_run: float = 0.15) -> np.ndarray:
     """Columns crossed by one unbroken vertical stroke spanning many lines (margin rules, borders).
 
