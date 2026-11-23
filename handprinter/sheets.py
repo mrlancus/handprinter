@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 
 from handprinter import pages, review
+from handprinter import sheet_banks as banks
 from handprinter.db import new_id, now_iso, transaction
 from handprinter.geometry import Box
 from handprinter.recognition import refit
@@ -33,105 +34,25 @@ FOCUSES = {
     "everyday": "Everyday sentences",
     "pairs": "Tricky letter pairs and joins",
     "capitals": "Capitals, digits and punctuation",
-    "maths": "Maths: letters, Greek, fractions, powers",
+    "maths": "Maths: letters, Greek, fractions, powers, calculus",
     "chemistry": "Chemistry formulas and equations",
+    "physics": "Physics equations, units and calculations",
+    "python": "Python code",
     "mine": "Words from your own notes",
 }
 LINES_PER_SHEET = 12
 
-# Original lines, written for this app. Every letter appears in many different neighbours.
-EVERYDAY = [
-    "The quick brown fox jumps over the lazy dog again",
-    "Pack my box with five dozen liquor jugs tonight",
-    "Jackdaws love my big sphinx of quartz, they said",
-    "Seven wizards quickly jumped over the frozen bog",
-    "We have just enough time to finish the work today",
-    "She bought a dozen eggs, a jar of honey and bread",
-    "The weather was cold, so we stayed inside to read",
-    "Remember to bring your notes and a spare pen too",
-    "His younger brother quietly fixed the broken clock",
-    "A gentle breeze moved the curtains in the evening",
-    "Every morning the train leaves the station at eight",
-    "Write the answer clearly and check it twice after",
-    "Few people knew the old bridge was being repaired",
-    "Many thanks for the kind message you sent yesterday",
-    "The library opens early on weekdays but not Sundays",
-    "Quiet voices drifted along the narrow, empty hallway",
-    "Our group met after class to plan the final project",
-    "The puzzle looked simple but took almost an hour",
-    "Light travels much faster than sound through the air",
-    "Bring a jacket because the forecast says heavy rain",
-]
-PAIRS = [
-    "running summer minimum community immune hammer",
-    "clamp cloud clear cliff click clock declare uncle",
-    "little bottle kettle settle battle letter better",
-    "offer office affect effort different coffee stuff",
-    "willow swallow follow hollow yellow pillow fellow",
-    "barn burn corn learn modern turn return pattern",
-    "illicit illness skill still fill drill spill ill",
-    "voice vivid vowel every over seven never above",
-    "thing thought through thirty theory although this",
-    "going morning evening nothing everything singing",
-    "quick queen quiet equal square request unique",
-    "rhythm myth gym system symbol style typical",
-    "ice ink iron idea image item issue inside igloo",
-    "mmm minimum murmur rumour humour number member",
-    "acceptance occasion occur success access accord",
-    "where when which whose while whale whistle why",
-    "zone zebra size prize puzzle fizzy dozen amaze",
-    "jam jet joke judge object enjoy major project",
-    "box fox tax next text exact expert relax mixture",
-    "an in on un am im om um ar er ir or ur nn rn",
-]
-CAPITALS = [
-    "On 3 May 2025 at 14:30, Dr Evans met Jo and Kim.",
-    "Quinn, Zara, Xavier and Yusuf live at 47 High St.",
-    "Call 0161 555 0192 before 9 am on Tuesday, OK?",
-    "Room 7B holds 28 students; Room 12A holds 30.",
-    "PAGE 1 OF 4 - CHAPTER 9: FORCES AND MOTION",
-    "Is it 6, 8 or 10? Nobody knew (not even Ms Ng).",
-    "The UK, USA, EU and UN signed it in June 1945.",
-    "Order #2048: 3 x pens, 2 x pads, 1 x ruler, 5%",
-    "Vera's \"best\" score was 96/100 - well done!",
-    "In 1999 & 2000 the totals were 1,250 and 3,875.",
-    "WARNING: Do NOT mix acids with bleach; it's toxic.",
-    "Answer A, B, C or D; then explain why in 2 lines.",
-]
-MATHS = [
-    "Solve $x^2 + 3x - 4 = 0$ so $x = 1$ or $x = -4$",
-    "If $y = 2x + 5$ then $x = \\frac{y - 5}{2}$",
-    "The angle $\\theta$ is $30^\\circ$ so $\\sin\\theta = \\frac{1}{2}$",
-    "Let $\\alpha$, $\\beta$ and $\\gamma$ be the three angles",
-    "Area $= \\pi r^2$ and circumference $= 2\\pi r$",
-    "$\\lambda = \\frac{v}{f}$ and $\\Delta x = x_2 - x_1$",
-    "$\\sqrt{16} = 4$ and $\\sqrt{2} \\approx 1.41$",
-    "$a^3 - b^3 = (a - b)(a^2 + ab + b^2)$",
-    "For $n \\ge 1$, $\\sum_{k=1}^{n} k = \\frac{n(n+1)}{2}$",
-    "$\\int_0^1 x^2 \\, dx = \\frac{1}{3}$",
-    "$f(x) = 3x^2 - 2x + 7$ so $f'(x) = 6x - 2$",
-    "$\\mu$, $\\sigma$, $\\omega$, $\\rho$, $\\phi$ and $\\epsilon$",
-    "$x \\le 5$, $y \\ne 0$, $z \\pm 2$ and $3 \\times 4 \\div 6$",
-    "$\\vec{F} = m\\vec{a}$ and $E = mc^2$",
-    "$\\log_{10} 100 = 2$ and $e^{\\ln x} = x$",
-    "$P(A) = 0.3$, $P(B) = 0.5$, $P(A \\cap B) = 0.15$",
-]
-CHEMISTRY = [
-    "$2H_2 + O_2 \\rightarrow 2H_2O$",
-    "$MgSO_4 \\cdot 7H_2O \\rightarrow MgSO_4 + 7H_2O$",
-    "$CaCO_3 \\rightarrow CaO + CO_2$ on heating",
-    "$H^+$ ions from acids and $OH^-$ ions from alkalis",
-    "$Cu^{2+} + 2e^- \\rightarrow Cu$ at the cathode",
-    "$HCl + NaOH \\rightarrow NaCl + H_2O$",
-    "$2Mg(NO_3)_2 \\rightarrow 2MgO + 4NO_2 + O_2$",
-    "$Fe^{3+}$, $Al^{3+}$, $SO_4^{2-}$ and $NO_3^-$",
-    "$N_2 + 3H_2 \\rightleftharpoons 2NH_3$",
-    "$C_6H_{12}O_6 + 6O_2 \\rightarrow 6CO_2 + 6H_2O$",
-    "$Zn + H_2SO_4 \\rightarrow ZnSO_4 + H_2$",
-    "pH $= -\\log[H^+]$ and $K_w = 1.0 \\times 10^{-14}$",
-]
-BANKS = {"everyday": EVERYDAY, "pairs": PAIRS, "capitals": CAPITALS, "maths": MATHS, "chemistry": CHEMISTRY}
-MIX = {"everyday": 4, "pairs": 2, "capitals": 2, "maths": 2, "chemistry": 1, "mine": 1}
+BANKS = {"everyday": banks.EVERYDAY, "pairs": banks.PAIRS, "capitals": banks.CAPITALS, "maths": banks.MATHS,
+         "chemistry": banks.CHEMISTRY, "physics": banks.PHYSICS, "python": banks.PYTHON}
+GENERATED = {"maths", "physics"}  # these also get fresh lines with random numbers every time
+MIX = {"everyday": 4, "pairs": 2, "capitals": 1, "maths": 2, "chemistry": 1, "physics": 1, "mine": 1}
+
+
+def _pool(bank: str, rng: random.Random) -> list[str]:
+    pool = list(BANKS[bank])
+    if bank in GENERATED:
+        pool += banks.generated(bank, rng, 40)
+    return pool
 
 
 def _units(text: str) -> Counter:
@@ -197,18 +118,18 @@ def make_sheet(conn: sqlite3.Connection, focus: str = "mixed", seed: int | None 
         lines: list[str] = []
         mine = _my_lines(conn, rng, 4)
         for bank, k in MIX.items():
-            pool = mine if bank == "mine" else BANKS[bank]
+            pool = mine if bank == "mine" else _pool(bank, rng)
             if not pool:
-                pool = [line for line in EVERYDAY if line not in lines]
+                pool = [line for line in banks.EVERYDAY if line not in lines]
             picked = _pick([line for line in pool if line not in lines], have, k, rng)
             lines += picked
             for line in picked:
                 have.update(_units(line))
         lines = lines[:LINES_PER_SHEET]
     elif focus == "mine":
-        lines = _my_lines(conn, rng, LINES_PER_SHEET) or _pick(EVERYDAY, have, LINES_PER_SHEET, rng)
+        lines = _my_lines(conn, rng, LINES_PER_SHEET) or _pick(banks.EVERYDAY, have, LINES_PER_SHEET, rng)
     else:
-        lines = _pick(BANKS[focus], have, LINES_PER_SHEET, rng)
+        lines = _pick(_pool(focus, rng), have, LINES_PER_SHEET, rng)
     sheet_id = new_id("sht")
     number = conn.execute("SELECT COUNT(*) FROM sheets").fetchone()[0] + 1
     conn.execute("INSERT INTO sheets (id, number, created_at, focus, seed, lines) VALUES (?,?,?,?,?,?)",

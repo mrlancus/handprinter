@@ -24,7 +24,7 @@ class BatchIn(BaseModel):
 
 
 class SheetIn(BaseModel):
-    focus: Literal["mixed", "everyday", "pairs", "capitals", "maths", "chemistry", "mine"] = "mixed"
+    focus: Literal["mixed", "everyday", "pairs", "capitals", "maths", "chemistry", "physics", "python", "mine"] = "mixed"
 
 
 class ApplySheetIn(BaseModel):

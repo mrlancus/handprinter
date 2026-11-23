@@ -74,3 +74,12 @@ def test_whichever_line_is_skipped_it_is_found(conn, store, import_bytes):
         out = sheets.apply_sheet(conn, store, src, sheet_id)
         assert out["missing_sheet_lines"] == [skip + 1], (skip, out)
         assert _texts(conn, src)[0] == written
+
+
+def test_every_focus_fills_a_sheet_and_maths_is_well_formed(conn):
+    for focus in sheets.FOCUSES:
+        sh = sheets.make_sheet(conn, focus, seed=11)
+        assert len(sh["lines"]) == sheets.LINES_PER_SHEET or focus == "mine", focus
+        for line in sh["lines"]:
+            assert line.count("$") % 2 == 0, line  # every maths span is closed
+    assert any("def " in ln or "for " in ln or "import" in ln for ln in sheets.make_sheet(conn, "python", seed=2)["lines"])
