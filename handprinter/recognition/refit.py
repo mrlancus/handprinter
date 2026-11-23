@@ -141,7 +141,7 @@ class LineInk:
         x1, y1 = min(gray.shape[1], int(np.ceil(box.x + box.w))), min(gray.shape[0], int(np.ceil(box.y + box.h)))
         mask = detect.ink_mask(gray[y0:y1, x0:x1]) if x1 > x0 and y1 > y0 else np.zeros((0, 0), dtype=bool)
         if mask.size:
-            mask[mask.mean(axis=1) > 0.35] = False  # printed ruling crossing the line
+            mask[detect.ruled_rows(mask, 0.6)] = False  # printed ruling crossing the line (one unbroken stroke)
             for b in omitted:
                 ox0, oy0 = max(0, int(b.x) - x0), max(0, int(b.y) - y0)
                 ox1, oy1 = int(np.ceil(b.x + b.w)) - x0, int(np.ceil(b.y + b.h)) - y0

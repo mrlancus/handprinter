@@ -186,3 +186,33 @@ def test_app_toolbar_on_a_dark_bar_is_not_writing():
     found = detect.detect_layout(img)
     assert all(line.box.y > 70 for line in found.lines), [line.box for line in found.lines]
     assert len(found.lines) == 3
+
+
+def test_sloping_close_lines_in_two_columns_stay_one_line_each():
+    """Like real notes: two columns, lines rising to the right, spaced-out words, lines close together."""
+    page_img = Image.new("RGB", (1800, 900), (255, 255, 255))
+    left = ["An acid is a species that when dissolved", "to form an aqueous solution will release", "Bases and alkalis are species that react",
+            "in a neutralisation reaction and accept", "An alkali is a water soluble base that"]
+    right = ["Water of crystallisation in a compound", "thermal decomposition of salts can occur", "this cannot be used for the reaction"]
+    font = _font(30)
+
+    def sloped(text: str) -> Image.Image:
+        words = text.split()
+        strip = Image.new("L", (900, 120), 0)
+        d = ImageDraw.Draw(strip)
+        x = 10
+        for wd in words:
+            d.text((x, 40), wd, fill=255, font=font)
+            x += int(d.textlength(wd, font=font)) + 34  # wide gaps between words, as in spaced-out writing
+        return strip.rotate(3, resample=Image.BICUBIC, expand=False)  # rising to the right
+
+    for col_x, lines_ in ((40, left), (980, right)):
+        for i, text in enumerate(lines_):
+            strip = sloped(text)
+            page_img.paste((30, 30, 40), (col_x, 60 + i * 56), strip)  # 56 px apart: tails nearly touch
+    found = detect.detect_layout(page_img)
+    words_per_line = sorted(len(line.words) for line in found.lines)
+    assert len(found.lines) == len(left) + len(right), [(round(l.box.x), round(l.box.y), len(l.words)) for l in found.lines]
+    for line in found.lines:
+        assert line.box.x + line.box.w < 960 or line.box.x > 960, f"line runs across columns: {line.box}"
+    assert words_per_line == sorted(len(t.split()) for t in left + right)

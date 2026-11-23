@@ -281,20 +281,22 @@ def paint_omitted(img: Image.Image, context: Box, areas: list[Box], fill: tuple[
     return out
 
 
-def fade_outside(img: Image.Image, context: Box, target: Box, strength: float = 0.75) -> Image.Image:
-    """Fade everything outside `target` towards white, so a reader sees which line is meant.
+def fade_outside(img: Image.Image, context: Box, keep: Box | list[Box], strength: float = 0.75) -> Image.Image:
+    """Fade everything outside `keep` towards white, so a reader sees which line is meant.
 
-    The surrounding lines stay faintly visible as context; only the target keeps full contrast.
-    Used for recognition images only, never for training crops.
+    `keep` is the target box or, better, the target line's word boxes: on sloping handwriting a
+    line's box also covers words of the lines above and below, its word boxes do not. The
+    surrounding writing stays faintly visible as context. Recognition images only, never training crops.
     """
+    boxes = keep if isinstance(keep, list) else [keep]
     sx, sy = img.width / context.w, img.height / context.h
-    x0, y0 = max(0, round((target.x - context.x) * sx)), max(0, round((target.y - context.y) * sy))
-    x1, y1 = min(img.width, round((target.x + target.w - context.x) * sx)), min(img.height, round((target.y + target.h - context.y) * sy))
-    if x0 <= 0 and y0 <= 0 and x1 >= img.width and y1 >= img.height:
-        return img
-    faded = Image.blend(img.convert("RGB"), Image.new("RGB", img.size, (255, 255, 255)), strength)
-    if x1 > x0 and y1 > y0:
-        faded.paste(img.convert("RGB").crop((x0, y0, x1, y1)), (x0, y0))
+    base = img.convert("RGB")
+    faded = Image.blend(base, Image.new("RGB", img.size, (255, 255, 255)), strength)
+    for b in boxes:
+        x0, y0 = max(0, round((b.x - context.x) * sx)), max(0, round((b.y - context.y) * sy))
+        x1, y1 = min(img.width, round((b.x + b.w - context.x) * sx)), min(img.height, round((b.y + b.h - context.y) * sy))
+        if x1 > x0 and y1 > y0:
+            faded.paste(base.crop((x0, y0, x1, y1)), (x0, y0))
     return faded
 
 

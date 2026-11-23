@@ -59,7 +59,7 @@ def cache_key(image_sha: str, model: str) -> str:
     return hashlib.sha256(f"{image_sha}|{model}|{PROMPT_VERSION}|{_settings_signature()}".encode()).hexdigest()
 
 
-def plan(conn: sqlite3.Connection, source_ids: list[str], include_overview: bool) -> list[PlannedItem]:
+def plan(conn: sqlite3.Connection, source_ids: list[str], include_overview: bool, force: bool = False) -> list[PlannedItem]:
     """Decide which images would be sent: optional page overviews plus open line regions."""
     items: list[PlannedItem] = []
     for source_id in source_ids:
@@ -74,6 +74,9 @@ def plan(conn: sqlite3.Connection, source_ids: list[str], include_overview: bool
         if include_overview or not lines:
             items.append(PlannedItem(source_id, None, "page_overview", full, full))
         for line in lines:
+            if not force and conn.execute(
+                    "SELECT 1 FROM proposals WHERE region_id = ? AND stale = 0 LIMIT 1", (line["id"],)).fetchone():
+                continue  # already read, and its box has not changed since: nothing new to read
             target = Box(line["x"], line["y"], line["w"], line["h"])
             margin = max(12.0, 0.25 * line["h"])
             context = target.pad(margin).clamp(full.w, full.h)
@@ -111,7 +114,11 @@ def build(
     progress: Callable[[float, str], None] = lambda f, m: None,
 ) -> dict[str, Any]:
     """Write `recognition/jobs/<id>/` with manifest, images, prompt, schema and empty results/."""
-    planned = plan(conn, source_ids, include_overview)
+    planned = plan(conn, source_ids, include_overview, force)
+    already = conn.execute(
+        f"""SELECT COUNT(*) FROM regions r WHERE r.source_id IN ({','.join('?' * len(source_ids))}) AND r.deleted = 0 AND r.kind = 'line'
+            AND r.status IN ('unprocessed', 'proposed', 'needs_review') AND (r.text_origin IS NULL OR r.text_origin = 'machine')
+            AND EXISTS (SELECT 1 FROM proposals p WHERE p.region_id = r.id AND p.stale = 0)""", source_ids).fetchone()[0] if not force else 0
     package_id = new_id("rec")
     root = package_dir(store, package_id)
     (root / "images").mkdir(parents=True)
@@ -134,7 +141,8 @@ def build(
         crop = pages.paint_omitted(imaging.cut_crop(working, pages.working_to_processed(source), item.context), item.context, omitted[item.source_id])
         if item.context_type == "line":
             # Only the target line keeps full contrast: neighbours are faded context, so they are not read as part of it.
-            crop = pages.fade_outside(crop, item.context, item.target)
+            words = [b.pad(0.15 * b.h) for _rid, b, _rev in item.local_boxes]
+            crop = pages.fade_outside(crop, item.context, words or item.target)
         scale = fit_within(crop.width, crop.height, MAX_LONG_EDGE, MAX_PIXELS)
         if scale < 1:
             crop = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.Resampling.LANCZOS)
@@ -213,7 +221,7 @@ def build(
     if reused:
         from handprinter.recognition import importer  # earlier readings go straight in; only new lines wait for Haiku
         imported = importer.import_package(conn, store, package_id)
-    return {"package_id": package_id, "items": len(entries), "cached_skipped": cached, "reused": reused,
+    return {"package_id": package_id, "items": len(entries), "cached_skipped": cached + already, "reused": reused,
             "to_read": len(entries) - reused, "imported": imported, "total_pixels": total_pixels, "path": str(root)}
 
 
