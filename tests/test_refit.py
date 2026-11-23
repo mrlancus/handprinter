@@ -230,3 +230,18 @@ def test_specks_are_not_lines_and_sideways_writing_is_not_sent_for_reading():
     readable = [line for line in found.lines if not line.not_a_line]
     assert len(readable) == 3, [line.box for line in found.lines]
     assert any(line.not_a_line and line.box.x > 1090 for line in found.lines)
+
+
+def test_a_big_heading_and_small_notes_are_each_read_at_their_own_size():
+    img = Image.new("RGB", (1400, 900), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.text((60, 30), "Acids and Bases", fill=(30, 30, 40), font=_font(90))  # big heading
+    small = ["an acid releases H+ ions in water", "a base accepts H+ ions from acids", "an alkali is a soluble base",
+             "salts form when acids react", "with bases or with metals", "and carbonates too"]
+    for i, t in enumerate(small):
+        draw.text((60, 200 + i * 38), t, fill=(30, 30, 40), font=_font(26))  # small, tight notes
+    found = detect.detect_layout(img)
+    assert len(found.lines) == 1 + len(small), [(round(l.box.y), len(l.words)) for l in found.lines]
+    heading = found.lines[0]
+    assert len(heading.words) == 3 and heading.box.h > 60
+    assert sorted(len(l.words) for l in found.lines[1:]) == sorted(len(t.split()) for t in small)

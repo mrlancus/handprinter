@@ -425,14 +425,39 @@ def _split_tall(mask: np.ndarray, p: _Piece, th: float) -> list[_Piece]:
 
 
 def find_lines(clean: np.ndarray, th: float | None = None) -> list[list[tuple[int, int, int, int]]]:
-    """Lines as lists of word boxes (x0, y0, x1, y1), word-first.
+    """Lines as lists of word boxes (x0, y0, x1, y1), word-first, with the writing size measured per area.
+
+    The page is split into blocks (columns, headings, separate notes); each block is measured on
+    its own, so a big heading and small notes on one page are both handled at their own size.
+    """
+    th = th or text_height(components(clean))
+    if th <= 0:
+        return []
+    blocks = xy_blocks(clean, min_column_h=int(6 * th))
+    if len(blocks) <= 1:
+        return _find_lines_in(clean, th)
+    out: list[list[tuple[int, int, int, int]]] = []
+    for bx0, by0, bx1, by1 in blocks:
+        sub = clean[by0:by1, bx0:bx1]
+        comps = components(sub)
+        local = text_height(comps) if len(comps) >= 5 else th
+        # only a clearly different size counts (a heading, a small side note); touching lines or a few
+        # tall letters must not make an area look bigger than it is
+        local = local if (local > 1.6 * th or local < 0.6 * th) else th
+        local = min(3 * th, max(0.5 * th, local))
+        for line in _find_lines_in(sub, local):
+            out.append([(x0 + bx0, y0 + by0, x1 + bx0, y1 + by0) for x0, y0, x1, y1 in line])
+    return out
+
+
+def _find_lines_in(clean: np.ndarray, th: float) -> list[list[tuple[int, int, int, int]]]:
+    """Lines in one area whose writing is about `th` tall.
 
     Letters are joined into word pieces (small closing), pieces into lines when their letter
-    bodies sit at the same height and the gap between them is less than about two letters tall.
+    bodies sit at the same height and the gap between them is less than a few letters tall.
     A column gap, a heading above or a note beside therefore start a new line by themselves.
     """
     comps = components(clean)
-    th = th or text_height(comps)
     if th <= 0:
         return []
     # Long, very thin horizontal strokes (dashed or faint rules, underlines, box edges) are not letters:
