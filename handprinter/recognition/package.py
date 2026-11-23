@@ -119,7 +119,7 @@ def build(
     shutil.copyfile(prompt_path(), root / "prompt.md")
     (root / "result.schema.json").write_text(schema_text(), encoding="utf-8")
 
-    entries, cached, total_pixels = [], 0, 0
+    entries, cached, reused, total_pixels = [], 0, 0, 0
     working_cache: dict[str, tuple[Image.Image, dict[str, Any]]] = {}
     omitted: dict[str, list[Box]] = {}
     for index, item in enumerate(planned):
@@ -141,9 +141,23 @@ def build(
         data = imaging.png_bytes(crop)
         digest = sha256_bytes(data)
         key = cache_key(digest, settings.recognition_model)
-        if not force and conn.execute("SELECT 1 FROM recognition_items WHERE cache_key = ? AND status = 'succeeded' LIMIT 1", (key,)).fetchone():
-            cached += 1
-            continue
+        reuse = None
+        prev = None if force else conn.execute(
+            "SELECT package_id, item_id FROM recognition_items WHERE cache_key = ? AND status = 'succeeded' ORDER BY updated_at DESC LIMIT 1", (key,)).fetchone()
+        if prev is not None:
+            # This exact image was read before. If that reading is already on this very box, there is nothing to do.
+            # If the box is new (e.g. after Re-detect cleared the old guesses), reuse the earlier reading instead of
+            # skipping it, so the line is not left without text and no new read is needed.
+            on_this_region = item.region_id is None or conn.execute(
+                "SELECT 1 FROM proposals WHERE region_id = ? AND image_sha256 = ? AND stale = 0 LIMIT 1", (item.region_id, digest)).fetchone()
+            earlier = package_dir(store, prev["package_id"]) / "results" / f"{prev['item_id']}.json"
+            if on_this_region or not earlier.is_file():
+                cached += 1
+                continue
+            try:
+                reuse = json.loads(earlier.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                reuse = None
         item_id = f"i{len(entries) + 1:04d}"
         atomic_write(root / "images" / f"{item_id}.png", data)
         sx, sy = item.context.w / crop.width, item.context.h / crop.height
@@ -169,6 +183,10 @@ def build(
             "region_revision": item.region_revision,
             "cache_key": key,
         })
+        if reuse is not None:
+            atomic_write(root / "results" / f"{item_id}.json",
+                         json.dumps({**reuse, "item_id": item_id, "image_sha256": digest}, ensure_ascii=False).encode("utf-8"))
+            reused += 1
 
     manifest = {
         "job_id": package_id,
@@ -191,7 +209,12 @@ def build(
                 "INSERT INTO recognition_items (package_id, item_id, source_id, region_id, context_type, image_sha256, cache_key, status, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (package_id, e["item_id"], e["source_id"], e["region_id"], e["context_type"], e["image_sha256"], e["cache_key"], "pending", ts),
             )
-    return {"package_id": package_id, "items": len(entries), "cached_skipped": cached, "total_pixels": total_pixels, "path": str(root)}
+    imported = None
+    if reused:
+        from handprinter.recognition import importer  # earlier readings go straight in; only new lines wait for Haiku
+        imported = importer.import_package(conn, store, package_id)
+    return {"package_id": package_id, "items": len(entries), "cached_skipped": cached, "reused": reused,
+            "to_read": len(entries) - reused, "imported": imported, "total_pixels": total_pixels, "path": str(root)}
 
 
 def load_manifest(store: Store, package_id: str) -> dict[str, Any]:

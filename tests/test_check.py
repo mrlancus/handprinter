@@ -142,3 +142,19 @@ def test_redetect_clears_machine_guesses_but_keeps_your_work(conn, store, settin
     approved = review.get_region(conn, lines[1]["line"]["id"])
     assert approved["deleted"] == 0 and approved["status"] == "approved"
     assert not [r for r in alive.values() if r["text"] == "some machine guess" and r["created_by"] != "human"]
+
+
+def test_redetected_lines_reuse_earlier_readings_instead_of_being_skipped(conn, store, settings, page_lines):
+    sid, _ = page_lines
+    first = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    texts = ["the quick brown fox", "jumps over the lazy dog", "becuase it was late", "Meet me at 4pm"]
+    for e, t in zip(package.load_manifest(store, first["package_id"])["items"], texts):
+        _answer(store, first["package_id"], e, t)
+    importer.import_package(conn, store, first["package_id"])
+    pages.run_detection(conn, store, sid, replace=True)  # clears the machine guesses; same page, same boxes
+    assert all(not it["line"]["text"] for it in review.check_lines(conn, sid))
+    again = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    assert again["reused"] == 4 and again["to_read"] == 0
+    assert [it["line"]["text"] for it in review.check_lines(conn, sid)] == texts
+    third = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    assert third["items"] == 0 and third["cached_skipped"] == 4  # now truly done: skipped

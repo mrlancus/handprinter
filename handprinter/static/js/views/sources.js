@@ -239,7 +239,10 @@ async function recognitionDialog(sourceIds, status) {
     if (job.status !== 'succeeded') { mount(content, errorState(new Error(job.error || job.status))); return; }
     const r = job.result;
     mount(content,
-      h('p', {}, `Package `, h('code', { text: r.package_id }), ` written with ${r.items} item(s)${r.cached_skipped ? `, ${r.cached_skipped} skipped from cache` : ''}.`),
+      h('p', {}, `Package `, h('code', { text: r.package_id }), ` written: ${r.to_read ?? r.items} line(s) to read`,
+        r.reused ? `, ${r.reused} filled in from earlier readings (no new read needed)` : '',
+        r.cached_skipped ? `, ${r.cached_skipped} already done` : '', '.'),
+      r.to_read === 0 ? callout(r.reused ? 'Nothing new to read: every line was filled in from an earlier reading. Go to Check.' : 'Nothing new to read: every line on these pages has already been read. Go to Check.') : null,
       h('p', { class: 'mono xs', text: r.path }),
       h('ol', { class: 'steps' },
         h('li', {}, 'Open Claude Code in the Handprinter repository folder.'),
