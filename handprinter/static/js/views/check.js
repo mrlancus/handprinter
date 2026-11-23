@@ -78,6 +78,8 @@ export async function render(root, params) {
     const prev = pageIdx > 0 ? data.pages[pageIdx - 1] : null;
     const next = pageIdx >= 0 && pageIdx < data.pages.length - 1 ? data.pages[pageIdx + 1] : null;
     const clean = data.lines.filter(isClean);
+    const clearWords = data.lines.filter((it) => !lineIssues(it)).reduce((n, it) =>
+      n + it.words.filter((w) => w.status !== 'approved' && w.status !== 'excluded' && !wordIssues(w).length).length, 0);
     mount(head,
       h('div', {},
         h('h1', { text: 'Check' }),
@@ -89,7 +91,11 @@ export async function render(root, params) {
             data.pages.map((p) => h('option', { value: p.id, selected: p.id === data.source.id ? true : undefined }, `${p.original_filename} · ${p.open_lines} to check`)))),
         h('button', { class: 'btn btn--sm', type: 'button', disabled: !next, 'aria-label': 'Next page', onClick: () => next && go(next.id) }, icon('right')),
         clean.length ? h('button', { class: 'btn btn--sm', type: 'button', title: 'Approve every line on this page with nothing amber', onClick: () => approveClean(clean) },
-          icon('check'), `Approve ${clean.length} line${clean.length === 1 ? '' : 's'} with nothing amber`) : null) : null);
+          icon('check'), `Approve ${clean.length} line${clean.length === 1 ? '' : 's'} with nothing amber`) : null,
+        clearWords ? h('button', { class: 'btn btn--sm', type: 'button', title: 'Approve every word on this page that is not amber; amber words stay for you', onClick: () => approveClearWords(data.source.id) },
+          icon('check'), `Approve ${clearWords} non-amber word${clearWords === 1 ? '' : 's'}`) : null,
+        data.pages.length > 1 ? h('button', { class: 'btn btn--sm btn--quiet', type: 'button', title: 'Approve every non-amber word on every page', onClick: () => approveClearWords(null) },
+          'All pages…') : null) : null);
 
     if (!data.source || !data.lines.length) {
       mount(body, emptyState({ title: 'Nothing to check', icon: 'check', center: true,
@@ -315,6 +321,18 @@ export async function render(root, params) {
     toast(`${ok} line${ok === 1 ? '' : 's'} approved.`);
     const left = data.lines[0];
     if (left) cards.get(left.line.id)?.focusFirst();
+  }
+
+  /** Approve every word that is not amber, on this page (sourceId) or on every page (null). @param {string | null} sourceId */
+  async function approveClearWords(sourceId) {
+    const where = sourceId ? 'on this page' : 'on EVERY page waiting in Check';
+    if (!confirm(`Approve every word ${where} that is not amber? Amber words, and words on amber lines, stay for you to check. Lines whose words are all done are approved too.`)) return;
+    try {
+      const r = await api('/api/check/approve-clear', { body: { source_id: sourceId } });
+      toast(`${r.words_approved} word${r.words_approved === 1 ? '' : 's'} and ${r.lines_approved} line${r.lines_approved === 1 ? '' : 's'} approved; ${r.words_left} amber word${r.words_left === 1 ? '' : 's'} left to check.`);
+      window.dispatchEvent(new CustomEvent('hp:changed'));
+      await load(data.source?.id);
+    } catch (err) { toast(err instanceof Error ? err.message : String(err), 'error'); }
   }
 
   const relayout = () => { for (const c of cards.values()) c.layout(); };

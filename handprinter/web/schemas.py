@@ -95,6 +95,10 @@ class RecutLineIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
 
 
+class ApproveClearIn(BaseModel):
+    source_id: str | None = Field(default=None, pattern=r"^src_[0-9a-f]{16}$")  # None = every page
+
+
 class ExcludeLineIn(BaseModel):
     reason: str | None = Field(None, max_length=200)
 

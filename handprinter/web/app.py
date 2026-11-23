@@ -400,6 +400,12 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
         return {"pages": pages_open, "source": {"id": src["id"], "name": src["original_filename"], "processing_rev": src["processing_rev"]},
                 "lines": review.check_lines(conn, source_id)}
 
+    @app.post("/api/check/approve-clear")
+    def approve_clear(body: S.ApproveClearIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        if body.source_id:
+            pages.get_source(conn, body.source_id)
+        return review.approve_clear_words(conn, body.source_id)
+
     @app.post("/api/lines/{line_id}/approve")
     def approve_line(line_id: str, body: S.ApproveLineIn, conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
         return review.approve_line(conn, line_id, body.words, body.text, body.expected_revision)

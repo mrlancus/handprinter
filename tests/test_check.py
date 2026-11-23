@@ -158,3 +158,40 @@ def test_redetected_lines_reuse_earlier_readings_instead_of_being_skipped(conn, 
     assert [it["line"]["text"] for it in review.check_lines(conn, sid)] == texts
     third = package.build(conn, store, settings, [sid], include_overview=False, force=False)
     assert third["items"] == 0 and third["cached_skipped"] == 4  # now truly done: skipped
+
+
+def _propose(conn, region_id, text, flags=()):
+    conn.execute("UPDATE regions SET text = ?, text_origin = 'machine', status = 'needs_review', flags = ? WHERE id = ?",
+                 (text, json.dumps(list(flags)), region_id))
+
+
+def test_approve_non_amber_words_leaves_every_amber_thing_for_you(conn, page_lines):
+    sid, lines = page_lines
+    a, b = lines[0], lines[1]
+    # line a: all four words read cleanly -> words and the line get approved
+    for w, t in zip(a["words"], ["the", "quick", "brown", "fox"]):
+        _propose(conn, w["id"], t)
+    # line b: one word flagged, one word unread -> only the clear ones are approved, the line stays open
+    bw = b["words"]
+    _propose(conn, bw[0]["id"], "jumps")
+    _propose(conn, bw[1]["id"], "over", ["uncertain_text"])
+    for w in bw[3:]:
+        _propose(conn, w["id"], "x")
+    # a third line that is amber itself: none of its words are touched
+    c = lines[2]
+    for w in c["words"]:
+        _propose(conn, w["id"], "word")
+    conn.execute("UPDATE regions SET flags = ? WHERE id = ?", (json.dumps(["may_hold_several"]), c["line"]["id"]))
+
+    out = review.approve_clear_words(conn, sid)
+    get = lambda rid: review.get_region(conn, rid)
+    assert get(a["line"]["id"])["status"] == "approved" and get(a["line"]["id"])["text"] == "the quick brown fox"
+    assert [get(w["id"])["status"] for w in a["words"]] == ["approved"] * 4
+    assert get(bw[0]["id"])["status"] == "approved"
+    assert get(bw[1]["id"])["status"] == "needs_review" and get(bw[2]["id"])["status"] != "approved"
+    assert get(b["line"]["id"])["status"] != "approved"
+    assert all(get(w["id"])["status"] != "approved" for w in c["words"])
+    assert out["lines_approved"] == 1 and out["words_approved"] == 4 + 1 + len(bw[3:])
+    # the left-over amber word is still there to check, with its text untouched
+    assert get(bw[1]["id"])["text"] == "over"
+    assert review.approve_clear_words(conn, sid)["words_approved"] == 0  # nothing more to do

@@ -401,6 +401,58 @@ def exclude_line(conn: sqlite3.Connection, line_id: str, reason: str | None = No
         return {"line": line, "words": _line_words(conn, line_id)}
 
 
+def _line_has_issues(line: dict[str, Any], has_words: bool) -> bool:
+    """The line itself is amber in Check (same rule as check.js: lineIssues)."""
+    flags = [f for f in line["flags"] if f != "alignment_ambiguous" or not has_words]
+    reason = line["review_reason"] and line["status"] == "needs_review" and not str(line["review_reason"]).startswith("omitted:")
+    return bool(flags or reason)
+
+
+def _word_is_clear(w: dict[str, Any]) -> bool:
+    """Not amber in Check (same rule as check.js: wordIssues): has text and no warnings."""
+    return w["status"] in OPEN and bool(w["text"] and str(w["text"]).strip()) and not w["flags"]
+
+
+def approve_clear_words(conn: sqlite3.Connection, source_id: str | None = None) -> dict[str, int]:
+    """Approve every word that is not amber (on one page, or all pages); amber words stay for you.
+
+    Words on a line that is amber itself are left too. A line is approved as well once all its
+    words are approved or left out, using their texts. Nothing you typed or approved is changed.
+    """
+    where, args = ("AND source_id = ?", (source_id,)) if source_id else ("", ())
+    words_done = lines_done = left = 0
+    with transaction(conn):
+        rows = conn.execute(
+            f"""SELECT id FROM regions WHERE deleted = 0 AND kind = 'line' AND cls IN ('handwriting', 'uncertain', 'equation')
+                AND status IN ({','.join('?' * len(OPEN))}) {where} ORDER BY source_id, y""", (*OPEN, *args)).fetchall()
+        for r in rows:
+            line = get_region(conn, r["id"])
+            words = [w for w in _line_words(conn, line["id"]) if w["cls"] in ("handwriting", "uncertain", "equation")]
+            open_words = [w for w in words if w["status"] in OPEN]
+            if _line_has_issues(line, bool(words)):
+                left += len(open_words)
+                continue
+            for w in open_words:
+                if _word_is_clear(w):
+                    _write(conn, w, _status_change(w, "approved", None), "human", "approve_clear_words")
+                    words_done += 1
+                else:
+                    left += 1
+            words = [get_region(conn, w["id"]) for w in words]
+            kept = [w for w in words if w["status"] == "approved"]
+            if words and all(w["status"] in ("approved", "excluded") for w in words) and kept:
+                text = " ".join(w["text"] for w in kept)
+            elif not words and line["text"] and str(line["text"]).strip():
+                text = line["text"]
+            else:
+                continue
+            changes: dict[str, Any] = {"text": text, "text_origin": "human"} if text != line["text"] else {}
+            changes.update(_status_change({**line, **changes}, "approved", None))
+            _write(conn, line, changes, "human", "approve_clear_words")
+            lines_done += 1
+    return {"words_approved": words_done, "lines_approved": lines_done, "words_left": left}
+
+
 def check_lines(conn: sqlite3.Connection, source_id: str) -> list[dict[str, Any]]:
     """Open handwriting lines on a page, top to bottom, each with its word boxes."""
     rows = conn.execute(
