@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator
 
 from handprinter import review
 from handprinter.dataset import INLINE_MATH as MATH_SPAN
+from handprinter.dataset import plain_maths_map
 from handprinter.db import dumps, new_id, now_iso, transaction
 from handprinter.geometry import Box, Homography
 from handprinter.recognition import align as aligner
@@ -155,6 +156,13 @@ def _store_result(
 
     Returns (proposal id, protected count, whether the line's word boxes were re-cut to fit the text).
     """
+    if result["transcription"] and result["region_type"] != "equation" and "$" in result["transcription"]:
+        # `$Mg$` and `Mg` look the same written down: keep `$...$` only where it holds maths layout,
+        # and move the uncertain spans with the text.
+        text, where = plain_maths_map(result["transcription"])
+        if text != result["transcription"]:
+            spans = [{**sp, "start": where[sp["start"]], "end": max(where[sp["end"]], where[sp["start"]] + 1)} for sp in result["uncertain_spans"]]
+            result = {**result, "transcription": text, "uncertain_spans": [sp for sp in spans if sp["end"] <= len(text)]}
     model = result["model"].strip() or UNKNOWN_MODEL
     to_source = Homography.scale_offset(
         entry["to_source"]["scale_x"], entry["to_source"]["scale_y"], entry["to_source"]["offset_x"], entry["to_source"]["offset_y"]

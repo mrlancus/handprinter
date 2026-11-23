@@ -158,3 +158,21 @@ def test_redetected_lines_reuse_earlier_readings_instead_of_being_skipped(conn, 
     assert [it["line"]["text"] for it in review.check_lines(conn, sid)] == texts
     third = package.build(conn, store, settings, [sid], include_overview=False, force=False)
     assert third["items"] == 0 and third["cached_skipped"] == 4  # now truly done: skipped
+
+
+def test_import_drops_dollars_that_hold_no_maths_and_keeps_doubts_on_the_right_word(conn, store, settings, page_lines):
+    sid, lines = page_lines
+    info = package.build(conn, store, settings, [sid], include_overview=False, force=False)
+    entry = next(e for e in package.load_manifest(store, info["package_id"])["items"] if e["region_id"] == lines[0]["line"]["id"])
+    result = {
+        "schema_version": "1", "item_id": entry["item_id"], "image_sha256": entry["image_sha256"], "model": "claude-haiku-test",
+        "region_type": "handwriting", "transcription": "$the$ quick $brown$ fox", "marks": [], "quality_flags": [],
+        "uncertain_spans": [{"start": 13, "end": 18, "reason": "brown or brawn?"}], "review_reasons": [], "author_ambiguous": False,
+    }
+    (package.package_dir(store, info["package_id"]) / "results" / f"{entry['item_id']}.json").write_text(json.dumps(result), encoding="utf-8")
+    importer.import_package(conn, store, info["package_id"])
+    item = review.check_lines(conn, sid)[0]
+    assert item["line"]["text"] == "the quick brown fox"
+    assert [w["text"] for w in item["words"]] == ["the", "quick", "brown", "fox"]
+    assert ["uncertain_span" in w["flags"] for w in item["words"]] == [False, False, True, False]
+    assert not any("contains_math" in w["flags"] for w in item["words"])

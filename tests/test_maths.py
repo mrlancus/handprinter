@@ -62,3 +62,12 @@ def test_approved_maths_exports_to_maths_jsonl_not_words(conn, store, fixture_so
     no_maths = dataset.Filters(include_maths=False)
     examples, excluded = dataset.eligible_examples(conn, "approved_only", no_maths)
     assert not any(e.maths for e in examples) and excluded["maths not selected"] == 2
+
+
+def test_dollars_without_maths_layout_do_not_change_the_label():
+    from handprinter.dataset import plain_maths, plain_maths_map
+    assert plain_maths("$Mg$ reacts") == "Mg reacts"
+    assert plain_maths("$x + 1 = 5$") == "x + 1 = 5"
+    assert plain_maths("$MgSO_4$ and $H^+$ and $\\frac{3}{4}$") == "$MgSO_4$ and $H^+$ and $\\frac{3}{4}$"
+    text, where = plain_maths_map("the $Mg$ ion")
+    assert text == "the Mg ion" and text[where[5]:where[7]] == "Mg"
