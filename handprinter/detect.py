@@ -235,8 +235,9 @@ def thin_rule_pixels(mask: np.ndarray) -> np.ndarray:
     paper looks darker, so a faint rule drops out of the ink mask there, and what is left are
     thin level pieces in the gaps between words, which glue the words together. A rule is a
     3-row band holding long, thin pieces (each at least 0.6x the box height) that add up to a
-    quarter of the width; joins in joined-up writing are far shorter. Only those thin pieces
-    are returned, so letters keep their ink.
+    quarter of the width; joins in joined-up writing are far shorter. A rule along the foot of the
+    letters leaves only short gaps between words: there, thin ink right across the writing in one
+    band also counts. Only thin pixels are returned, so letters keep their ink.
     """
     h, w = mask.shape
     out = np.zeros_like(mask)
@@ -250,14 +251,27 @@ def thin_rule_pixels(mask: np.ndarray) -> np.ndarray:
         down[y] = (down[y + 1] + 1) * mask[y] if y < h - 1 else mask[y]
     thin = mask & (up + down - 1 <= max(3, round(0.05 * h)))  # a few pixels tall where it is
     long_piece, part = max(8, int(0.6 * h)), max(6, int(0.3 * h))
+    cols = np.flatnonzero(mask.any(axis=0))
+    x0, x1 = int(cols[0]), int(cols[-1]) + 1
+    bins = np.linspace(x0, x1, 11).astype(int)
     for y in range(1, h - 1):
         band = thin[y - 1:y + 2].any(axis=0)
         if band.sum() < 0.25 * w:
             continue
-        pieces = [(a, b) for a, b in _merge_runs(_runs(band, min_len=1), max_gap=2) if b - a >= part]
-        if sum(b - a for a, b in pieces if b - a >= long_piece) >= 0.25 * w:
+        runs = _merge_runs(_runs(band, min_len=1), max_gap=2)
+        pieces = [(a, b) for a, b in runs if b - a >= part]
+        long_total = sum(b - a for a, b in pieces if b - a >= long_piece)
+        if long_total >= 0.25 * w:
             for a, b in pieces:
                 out[y - 1:y + 2, a:b] |= thin[y - 1:y + 2, a:b]
+            continue
+        # A rule along the foot of the letters shows only in the (short) gaps between words, and in bits
+        # between the letters: thin ink in this band right across the writing, with several gaps' worth of
+        # long pieces. The letters' own joins cross the band at an angle and cover far less of it.
+        spread = sum(band[a:b].any() for a, b in zip(bins, bins[1:]) if b > a)
+        if (band[x0:x1].sum() >= 0.3 * (x1 - x0) and spread >= 9
+                and sum(1 for a, b in pieces if b - a >= long_piece) >= 2 and long_total >= 0.08 * w):
+            out[y - 1:y + 2] |= thin[y - 1:y + 2]
     return out
 
 

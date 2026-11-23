@@ -323,3 +323,40 @@ def test_tails_of_neighbouring_lines_are_not_part_of_a_line():
     kept = own_ink(mask)
     assert not kept[0:15].any() and not kept[80:90].any()
     assert kept[25:29, 50:54].all() and kept[60:75, 150:154].all() and kept[35:55].sum() == mask[35:55].sum()
+
+
+def test_a_ruled_line_along_the_foot_of_the_letters_is_removed_even_with_short_word_gaps():
+    from handprinter import detect
+
+    h, w = 60, 1000
+    mask = np.zeros((h, w), dtype=bool)
+    gaps = [38, 25, 25, 38, 25, 38, 25]  # only three gaps long enough to count on their own
+    x, words = 10, []
+    for g in gaps + [0]:
+        words.append((x, x + 90))
+        for sx in range(x, x + 90, 10):
+            mask[20:46, sx:sx + 3] = True  # letter strokes down to the baseline
+        x += 90 + g
+    mask[44:46, 10:x - 0] = True  # the ruled line, through letters and gaps
+    cleaned = mask & ~detect.thin_rule_pixels(mask)
+    for (_a, b), (c, _d) in zip(words, words[1:]):
+        assert not cleaned[:, b + 1:c - 1].any()  # every word gap is open again
+    assert cleaned[20:44].sum() == mask[20:44].sum()  # the letters above the rule are untouched
+
+
+def test_a_tail_split_off_by_the_ruled_line_stays_with_its_word():
+    from handprinter.recognition.refit import own_ink
+
+    mask = np.zeros((70, 300), dtype=bool)
+    mask[30:50, 10:290] = True    # the line's letters, ending on the ruled line
+    mask[51:70, 120:124] = True   # a y's tail just below, cut by the box edge
+    mask[0:12, 200:204] = True    # a descender of the line above, cut by the top edge
+    kept = own_ink(mask)
+    assert kept[51:70, 120:124].all() and not kept[0:12].any()
+
+
+def test_set_symbols_are_spaced_operators():
+    from handprinter.recognition.refit import is_spaced, written_len
+
+    assert is_spaced("$A \\cup B$,") and written_len("$A \\cup B$,") == 5
+    assert not is_spaced("$\\infty$")
