@@ -309,7 +309,7 @@ function recognitionTab(status) {
       const cuts = cutPacks.length ? h('section', { class: 'panel stack' }, h('h2', { text: 'Word-box chat packs' }),
         cutPacks.map((/** @type {any} */ p) => h('div', { class: 'row' },
           h('button', { class: 'btn btn--sm', onClick: () => openChatPack(p.id, load) }, 'Open chat pack'),
-          h('span', {}, new Date(p.created_at).toLocaleString(), ` · ${p.processed} of ${p.items} processed`)))) : null;
+          h('span', {}, new Date(p.created_at).toLocaleString(), ` · ${p.processed} of ${p.items} processed · `, h('code', { class: 'xs', text: p.id }))))) : null;
       if (!pkgs.length) {
         mount(body, cuts, emptyState({ title: 'No recognition packages yet', icon: 'send',
           body: h('p', {}, 'Select pages under ', h('a', { href: '#/sources', text: 'Pages' }), ' and choose “Prepare recognition…”. Recognition never starts on its own.') }));

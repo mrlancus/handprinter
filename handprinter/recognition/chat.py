@@ -149,6 +149,24 @@ def parse_reply(raw: str, pack_id: str, number: int, items: list[dict]) -> tuple
     return f"Chat: {model.strip()}", out
 
 
+def reply_pack(raw: str, opened: str) -> str:
+    """The pack a pasted reply names (every reply carries its pack_id), so it goes where it belongs even when
+    pasted into another pack's box. Falls back to the opened pack if the reply names none."""
+    match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", raw.strip(), re.I | re.S)
+    try:
+        data = json.loads(match[1] if match else raw)
+    except (json.JSONDecodeError, RecursionError):
+        return opened  # split_reply reports the error
+    envelopes = data if isinstance(data, list) else [data]
+    named = {e.get("pack_id") for e in envelopes if isinstance(e, dict)}
+    if len(named) > 1:
+        raise ValueError("This reply mixes batches from different packs: paste each pack's part separately.")
+    pack = next(iter(named), None)
+    if not isinstance(pack, str) or not pack:
+        return opened
+    return pack
+
+
 def split_reply(raw: str, pack_id: str) -> list[tuple[int, str]]:
     """One reply or several: a chat asked for many batches may answer with a list of envelopes.
 
@@ -177,7 +195,10 @@ def split_reply(raw: str, pack_id: str) -> list[tuple[int, str]]:
 
 def check_replies(store: Store, pack_id: str, raw: str) -> list[tuple[int, str]]:
     """split_reply plus each batch's own checks; errors name the batch."""
-    _, items = open_pack(store, pack_id)
+    try:
+        _, items = open_pack(store, pack_id)
+    except ValueError:
+        raise ValueError(f"This reply is for pack {pack_id}, which is not in this app's data folder.") from None
     parts = split_reply(raw, pack_id)
     for number, text in parts:
         try:
@@ -189,7 +210,7 @@ def check_replies(store: Store, pack_id: str, raw: str) -> list[tuple[int, str]]
 
 def import_replies(conn: sqlite3.Connection, store: Store, pack_id: str, raw: str) -> dict[str, Any]:
     """Import every batch in a pasted reply (one envelope or a list of them)."""
-    total: dict[str, Any] = {"applied": 0, "previous": 0, "skipped": [], "errors": {}, "batches": []}
+    total: dict[str, Any] = {"pack_id": pack_id, "applied": 0, "previous": 0, "skipped": [], "errors": {}, "batches": []}
     for number, text in check_replies(store, pack_id, raw):
         got = import_reply(conn, store, pack_id, number, text)
         total["applied"] += got["applied"]

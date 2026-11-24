@@ -8,7 +8,7 @@ import { callout, loadingState } from '../components/states.js';
 export function openChatPack(id, onClose) {
   const body = h('div', { class: 'stack' });
   const dialog = h('dialog', { class: 'dialog dialog--wide', 'aria-label': 'Chat pack' },
-    h('div', { class: 'dialog__head' }, h('h2', { text: id.startsWith('ccut_') ? 'Word boxes · chat pack' : 'Recognition · chat pack' }),
+    h('div', { class: 'dialog__head' }, h('h2', {}, id.startsWith('ccut_') ? 'Word boxes · chat pack ' : 'Recognition · chat pack ', h('code', { class: 'xs', text: id })),
       h('button', { class: 'btn', onClick: () => dialog.close() }, 'Close')), body);
   dialog.addEventListener('close', () => { dialog.remove(); onClose?.(); });
   document.body.appendChild(dialog);
@@ -44,7 +44,8 @@ export function openChatPack(id, onClose) {
           if (job.status !== 'succeeded') throw new Error(job.error || job.status);
           const r = job.result;
           const errors = Object.entries(r.errors).map(([key, reasons]) => key + ': ' + /** @type {string[]} */ (reasons).join(', '));
-          const msg = [(r.batches && r.batches.length > 1 ? `Batches ${r.batches.join(', ')}: ` : '') + r.applied + ' imported for review.', r.previous ? r.previous + ' already processed.' : '',
+          const msg = [(r.pack_id && r.pack_id !== id ? `Imported into pack ${r.pack_id} (the pack named in the reply). ` : '') +
+            (r.batches && r.batches.length > 1 ? `Batches ${r.batches.join(', ')}: ` : '') + r.applied + ' imported for review.', r.previous ? r.previous + ' already processed.' : '',
             r.skipped.length ? r.skipped.length + ' skipped because the page or boxes changed.' : '', ...errors].filter(Boolean).join(' ');
           await load(errors.length ? p.number : undefined, msg, errors.length ? reply.value : '');
         } catch (err) { status.textContent = err instanceof Error ? err.message : String(err); }

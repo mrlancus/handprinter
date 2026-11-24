@@ -144,3 +144,19 @@ def test_several_batches_can_be_pasted_at_once(conn, store, settings, import_byt
     assert out["batches"] == [1, 2] and out["applied"] == 4 and not out["errors"]
     for it in items[:4]:
         assert [w["text"] for w in review._line_words(conn, it["line_id"])] == it["words"]
+
+
+def test_a_reply_goes_to_the_pack_it_names_whichever_box_it_was_pasted_in(conn, store, settings, import_bytes):
+    sid = _page(conn, store, import_bytes)
+    client = make_client(settings)
+    packs = "/api/chat-packs/word-cuts"
+    first = finish(client, settings, client.post(packs, json={"scope": "all", "source_ids": [sid]}))["package_id"]
+    items = cuts.load_manifest(store, first)["items"]
+    # pressing the button again makes a second pack of the same lines
+    other = finish(client, settings, client.post(packs, json={"scope": "all", "source_ids": [sid]}))["package_id"]
+    assert other != first
+    body = reply(first, 1, "unknown", dict(item_id=items[0]["item_id"], cuts=_true_cuts(conn, items[0]), unsure=False, note=""))
+    out = finish(client, settings, client.post(f"/api/chat-packs/{other}/batches/1/reply", json=body))
+    assert out["pack_id"] == first and out["applied"] == 1, out
+    missing = client.post(f"/api/chat-packs/{other}/batches/1/reply", json=reply("ccut_0000000000000000", 1, "unknown", {"item_id": "c0001"}))
+    assert missing.status_code == 422 and "not in this app" in missing.text
