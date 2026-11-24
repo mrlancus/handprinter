@@ -119,3 +119,28 @@ def test_old_packs_keep_their_batches_of_four(conn, store, settings, import_byte
     path.write_text(json.dumps(m))
     state = chat.describe(conn, store, cut["package_id"], None)
     assert len(state["images"]) == min(4, cut["items"]) and "filename" in state["prompt"]
+
+
+def test_several_batches_can_be_pasted_at_once(conn, store, settings, import_bytes):
+    """A chat asked for many batches answers with a list of envelopes: one paste imports them all."""
+    sid = _page(conn, store, import_bytes)
+    cut = cuts.build(conn, store, "all", [sid], manual=True)
+    path = cuts.package_dir(store, cut["package_id"]) / "manifest.json"
+    m = json.loads(path.read_text())
+    m["chat_batch_size"] = 2
+    path.write_text(json.dumps(m))
+    items = m["items"]
+    envs = [dict(pack_id=cut["package_id"], batch=n + 1, model="unknown",
+                 results=[dict(item_id=it["item_id"], cuts=_true_cuts(conn, it), unsure=False, note="") for it in items[2 * n:2 * n + 2]])
+            for n in range(2)]
+    bad = [*envs, {**envs[0], "pack_id": "ccut_other"}]
+    try:
+        chat.check_replies(store, cut["package_id"], json.dumps(bad))
+    except ValueError as exc:
+        assert "different pack" in str(exc)
+    else:
+        raise AssertionError("a list with another pack's batch was accepted")
+    out = chat.import_replies(conn, store, cut["package_id"], "```json\n" + json.dumps(envs) + "\n```")
+    assert out["batches"] == [1, 2] and out["applied"] == 4 and not out["errors"]
+    for it in items[:4]:
+        assert [w["text"] for w in review._line_words(conn, it["line_id"])] == it["words"]

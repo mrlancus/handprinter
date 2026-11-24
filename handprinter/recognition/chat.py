@@ -149,6 +149,57 @@ def parse_reply(raw: str, pack_id: str, number: int, items: list[dict]) -> tuple
     return f"Chat: {model.strip()}", out
 
 
+def split_reply(raw: str, pack_id: str) -> list[tuple[int, str]]:
+    """One reply or several: a chat asked for many batches may answer with a list of envelopes.
+
+    Returns (batch number, that batch's JSON text) for each, after checking every batch belongs to this
+    pack and holds valid results (so a mistake in batch 7 refuses the paste before anything is applied).
+    """
+    match = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", raw.strip(), re.I | re.S)
+    try:
+        data = json.loads(match[1] if match else raw)
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError("Paste the complete JSON reply, including the outer braces.") from exc
+    envelopes = data if isinstance(data, list) else [data]
+    if not envelopes or len(envelopes) > 500:
+        raise ValueError("The reply holds no batches.")
+    out: list[tuple[int, str]] = []
+    seen: set[int] = set()
+    for env in envelopes:
+        if not isinstance(env, dict) or env.get("pack_id") != pack_id or type(env.get("batch")) is not int:
+            raise ValueError("Part of this reply belongs to a different pack. Paste it into that pack.")
+        if env["batch"] in seen:
+            raise ValueError(f"Batch {env['batch']} appears twice in this reply.")
+        seen.add(env["batch"])
+        out.append((env["batch"], json.dumps(env, ensure_ascii=False)))
+    return out
+
+
+def check_replies(store: Store, pack_id: str, raw: str) -> list[tuple[int, str]]:
+    """split_reply plus each batch's own checks; errors name the batch."""
+    _, items = open_pack(store, pack_id)
+    parts = split_reply(raw, pack_id)
+    for number, text in parts:
+        try:
+            parse_reply(text, pack_id, number, batch_items(items, number))
+        except ValueError as exc:
+            raise ValueError(f"Batch {number}: {exc}" if len(parts) > 1 else str(exc)) from None
+    return parts
+
+
+def import_replies(conn: sqlite3.Connection, store: Store, pack_id: str, raw: str) -> dict[str, Any]:
+    """Import every batch in a pasted reply (one envelope or a list of them)."""
+    total: dict[str, Any] = {"applied": 0, "previous": 0, "skipped": [], "errors": {}, "batches": []}
+    for number, text in check_replies(store, pack_id, raw):
+        got = import_reply(conn, store, pack_id, number, text)
+        total["applied"] += got["applied"]
+        total["previous"] += got["previous"]
+        total["skipped"] += got["skipped"]
+        total["errors"].update(got["errors"])
+        total["batches"].append(number)
+    return total
+
+
 def import_reply(conn: sqlite3.Connection, store: Store, pack_id: str, number: int, raw: str) -> dict[str, Any]:
     root, items = open_pack(store, pack_id)
     batch = batch_items(items, number)

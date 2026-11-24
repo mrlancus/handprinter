@@ -116,7 +116,7 @@ def _build_chat_cuts(job: Job) -> Any:
 def _import_chat_reply(job: Job) -> Any:
     p = job.params
     staged = job.store.staging(p["staged_id"])
-    result = chat.import_reply(job.conn, job.store, p["pack_id"], p["batch"], staged.read_text(encoding="utf-8"))
+    result = chat.import_replies(job.conn, job.store, p["pack_id"], staged.read_text(encoding="utf-8"))
     staged.unlink(missing_ok=True)
     return result
 

@@ -513,8 +513,7 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
 
     @app.post("/api/chat-packs/{pack_id}/batches/{batch}/reply")
     def chat_reply(pack_id: str, batch: int, body: S.ChatReplyIn, conn: sqlite3.Connection = Depends(db)) -> dict:
-        _, items = chat.open_pack(store, pack_id)
-        chat.parse_reply(body.reply, pack_id, batch, chat.batch_items(items, batch))
+        chat.check_replies(store, pack_id, body.reply)  # one batch or a list of batches, whichever was pasted
         staged_id = new_id("stg")
         staged = store.staging(staged_id)
         staged.write_text(body.reply, encoding="utf-8")
