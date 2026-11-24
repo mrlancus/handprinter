@@ -44,7 +44,7 @@ export function openChatPack(id, onClose) {
           if (job.status !== 'succeeded') throw new Error(job.error || job.status);
           const r = job.result;
           const errors = Object.entries(r.errors).map(([key, reasons]) => key + ': ' + /** @type {string[]} */ (reasons).join(', '));
-          const msg = [r.applied + ' imported for review.', r.previous ? r.previous + ' already processed.' : '',
+          const msg = [(r.batches && r.batches.length > 1 ? `Batches ${r.batches.join(', ')}: ` : '') + r.applied + ' imported for review.', r.previous ? r.previous + ' already processed.' : '',
             r.skipped.length ? r.skipped.length + ' skipped because the page or boxes changed.' : '', ...errors].filter(Boolean).join(' ');
           await load(errors.length ? p.number : undefined, msg, errors.length ? reply.value : '');
         } catch (err) { status.textContent = err instanceof Error ? err.message : String(err); }
@@ -71,7 +71,7 @@ export function openChatPack(id, onClose) {
                   h('figcaption', {}, h('a', { href: image, download: item + '.png' }, 'Save ' + item + '.png')));
               }))),
             h('details', { class: 'chat-prompt' }, h('summary', {}, 'Read prompt'), prompt),
-            h('label', { class: 'field' }, 'Chat reply', reply),
+            h('label', { class: 'field' }, 'Chat reply (one batch, or several batches pasted together)', reply),
             h('label', { class: 'field' }, 'Or open a JSON reply file', chooseFile), submit));
     } catch (err) {
       mount(body, callout(err instanceof Error ? err.message : String(err), 'error'),
