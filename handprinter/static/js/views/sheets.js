@@ -5,6 +5,7 @@ import { h, mount } from '../dom.js';
 import { hasMath, renderMath } from '../math.js';
 import { icon } from '../components/icons.js';
 import { callout, emptyState, errorState, loadingState } from '../components/states.js';
+import { openChatPack } from './chat-packs.js';
 import { trackJob } from '../jobs.js';
 import { toast } from '../app.js';
 
@@ -247,9 +248,24 @@ export function haikuCuts(sourceIds) {
     } catch (err) { status.textContent = ''; toast(err instanceof Error ? err.message : String(err), 'error'); }
     btn.removeAttribute('disabled');
   } }, icon('review'), 'Ask Haiku to place word boxes');
+  const manual = h('button', { class: 'btn', type: 'button' }, 'Build word-box chat pack');
+  manual.onclick = async () => {
+    manual.disabled = true;
+    status.textContent = 'Preparing numbered line images…';
+    try {
+      const { job_id } = await api('/api/chat-packs/word-cuts', { body: { scope: scope.value, source_ids: sourceIds } });
+      const job = await trackJob(job_id);
+      if (job.status !== 'succeeded') throw new Error(job.error || job.status);
+      if (job.result.items) {
+        status.replaceChildren(h('a', { href: '#/sources?tab=recognition' }, 'Reopen saved packs in Recognition packages'));
+        openChatPack(job.result.package_id);
+      } else status.textContent = 'No eligible lines for this selection.';
+    } catch (err) { status.textContent = err instanceof Error ? err.message : String(err); }
+    finally { manual.disabled = false; }
+  };
   return h('div', { class: 'stack' },
-    h('div', { class: 'row' }, scope, btn),
-    h('p', { class: 'small muted', text: 'Haiku looks at each line with its gaps numbered and says which gaps fall between words; the boxes are then cut exactly there. Only boxes you have not touched change, and the words still wait for your approval. Uses your Claude plan through Claude Code on the PC.' }),
+    h('div', { class: 'row' }, scope, manual, btn),
+    h('p', { class: 'small muted', text: 'Choose a chat pack for ChatGPT, Gemini, Claude or another vision chat, or ask Haiku through Claude Code. Each image shows numbered gaps between letters. Imported word boxes stay open for review.' }),
     status);
 }
 

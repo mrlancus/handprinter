@@ -365,3 +365,10 @@
 .sh-picker select { max-width: 16rem; }
 @media (pointer: coarse) { .sh-line { font-size: 1.5rem; } }
 .sh .panel { padding: var(--sp-4); }
+
+.chat-crop { display: block; max-width: 100%; height: auto; }
+
+/* Experiments: ready to train? */
+.ex-ready { list-style: none; margin: 0; display: grid; gap: var(--sp-3); }
+.ex-ready__step { display: grid; grid-template-columns: 20px 1fr; gap: var(--sp-2); align-items: start; }
+.ex-ready__step--next { background: var(--c-review-soft); border-radius: var(--radius-md); padding: var(--sp-2); margin: calc(-1 * var(--sp-2)); }

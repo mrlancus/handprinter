@@ -135,6 +135,7 @@ class BeforeAfterIn(BaseModel):
 
 
 class RecognitionIn(BaseModel):
+    manual_chat: bool = False
     source_ids: list[str] = Field(min_length=1, max_length=500)
     include_overview: bool = False
     force: bool = False
@@ -212,3 +213,7 @@ class LoginIn(BaseModel):
 class WordCutsIn(BaseModel):
     scope: Literal["amber", "all"] = "amber"
     source_ids: list[str] | None = Field(default=None, max_length=500)
+
+
+class ChatReplyIn(BaseModel):
+    reply: str = Field(min_length=1, max_length=192_000)

@@ -2,7 +2,7 @@
 
 A local website that turns photographs of your own handwriting into a reviewed training dataset. It compares two handwriting-generation models (DiffusionPen and Eruku) and composes handwriting onto pages.
 
-Everything runs and is stored on your computer. The only exception is images you explicitly send for recognition through Claude Code.
+Everything runs and is stored on your computer. You choose which images to share through a vision chat or Claude Code.
 
 - **Status:** see [docs/status.md](docs/status.md).
 - **Requirements:** see [docs/build-brief.md](docs/build-brief.md).
@@ -60,6 +60,13 @@ Copy `.env.example` to `.env`. Every setting is optional:
 6. **Dataset.** Export an immutable snapshot of PNG crops plus `words.jsonl` and `lines.jsonl`, split by page group, with an unseen-word test subset.
 7. **Experiments.** Check adapter status, run baselines on a fixed prompt set, rate outputs blind A/B, and generate.
 8. **Studio.** Place generated or imported images on a page in millimetres and export a PNG at an explicit dpi. No model is needed for this.
+
+## Use a chat pack with ChatGPT, Gemini, Claude or another vision chat
+
+1. For transcription, select pages in **Sources → Pages → Prepare recognition → Build chat pack**. For word boundaries, choose **Build word-box chat pack** on a page or in **Writing sheets**. Both work without a CLI or API key.
+2. Each batch contains up to four numbered PNGs. Preview them, then download and unzip the batch. Attach the PNGs to your chat and paste the prompt from Handprinter. You can also save individual images.
+3. Paste the JSON reply back into the same batch or choose a JSON file, then click **Import reply**. Review suggestions in **Check** or **Review**. Invalid items show a reason and can be corrected. Completed items are remembered, so you can switch chats between batches.
+4. Return to **Sources → Recognition packages** to resume. Existing recognition packages can also be opened as chat packs.
 
 ## Recognition through Claude Code
 

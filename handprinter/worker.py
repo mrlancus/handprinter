@@ -9,6 +9,7 @@ import sqlite3
 import threading
 import time
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -17,7 +18,7 @@ from handprinter.adapters import all_adapters
 from handprinter.adapters.base import RunnerCancelled
 from handprinter.config import Settings
 from handprinter.db import connect, init_db
-from handprinter.recognition import headless, importer, package
+from handprinter.recognition import chat, cuts, headless, importer, package
 from handprinter.storage import Store
 
 log = logging.getLogger("handprinter.worker")
@@ -80,7 +81,6 @@ def _apply_sheet(job: Job) -> Any:
 
 
 def _haiku_cuts(job: Job) -> Any:
-    from handprinter.recognition import cuts
     p = job.params
     return cuts.haiku_cuts(job.conn, job.store, job.settings, p.get("scope", "amber"), p.get("source_ids"), job.progress, job.cancelled)
 
@@ -105,7 +105,20 @@ def _process(job: Job) -> Any:
 
 def _build_recognition(job: Job) -> Any:
     p = job.params
-    return package.build(job.conn, job.store, job.settings, p["source_ids"], bool(p.get("include_overview")), bool(p.get("force")), job.progress)
+    settings = replace(job.settings, recognition_model=package.MANUAL_MODEL) if p.get("manual_chat") else job.settings
+    return package.build(job.conn, job.store, settings, p["source_ids"], bool(p.get("include_overview")), bool(p.get("force")), job.progress)
+
+
+def _build_chat_cuts(job: Job) -> Any:
+    return cuts.build(job.conn, job.store, job.params["scope"], job.params["source_ids"], job.progress, manual=True)
+
+
+def _import_chat_reply(job: Job) -> Any:
+    p = job.params
+    staged = job.store.staging(p["staged_id"])
+    result = chat.import_reply(job.conn, job.store, p["pack_id"], p["batch"], staged.read_text(encoding="utf-8"))
+    staged.unlink(missing_ok=True)
+    return result
 
 
 def _import_recognition(job: Job) -> Any:
@@ -170,6 +183,8 @@ HANDLERS: dict[str, Handler] = {
     "recut_line": _recut_line,
     "apply_sheet": _apply_sheet,
     "refill_sheets": _refill_sheets,
+    "build_chat_cuts": _build_chat_cuts,
+    "import_chat_reply": _import_chat_reply,
     "haiku_cuts": _haiku_cuts,
     "adapter_preflight": _adapter_preflight,
     "adapter_download": _adapter_download,

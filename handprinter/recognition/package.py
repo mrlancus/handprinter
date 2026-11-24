@@ -21,6 +21,7 @@ from handprinter.recognition import MAX_LONG_EDGE, MAX_PIXELS, PROMPT_VERSION, S
 from handprinter.storage import Store, atomic_write, sha256_bytes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MANUAL_MODEL = "Manual chat"
 OPEN_STATUSES = ("unprocessed", "proposed", "needs_review")
 
 
@@ -146,6 +147,9 @@ def build(
         scale = fit_within(crop.width, crop.height, MAX_LONG_EDGE, MAX_PIXELS)
         if scale < 1:
             crop = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.Resampling.LANCZOS)
+        base_w, base_h = crop.width, crop.height  # the band added below keeps these pixels' coordinates
+        if settings.recognition_model == MANUAL_MODEL:
+            crop = imaging.with_label(crop, f"i{len(entries) + 1:04d}")  # a chat reads which image is which
         data = imaging.png_bytes(crop)
         digest = sha256_bytes(data)
         key = cache_key(digest, settings.recognition_model)
@@ -168,7 +172,7 @@ def build(
                 reuse = None
         item_id = f"i{len(entries) + 1:04d}"
         atomic_write(root / "images" / f"{item_id}.png", data)
-        sx, sy = item.context.w / crop.width, item.context.h / crop.height
+        sx, sy = item.context.w / base_w, item.context.h / base_h
 
         def to_image(b: Box) -> list[float]:
             return [round((b.x - item.context.x) / sx, 2), round((b.y - item.context.y) / sy, 2), round(b.w / sx, 2), round(b.h / sy, 2)]
@@ -205,6 +209,8 @@ def build(
         "instructions": "Write one results/<item_id>.json per item, valid against result.schema.json, following prompt.md.",
         "items": entries,
     }
+    if settings.recognition_model == MANUAL_MODEL:
+        manifest.update(chat_batch_size=10, chat_labelled=True)  # see chat.py
     atomic_write(root / "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8"))
     ts = now_iso()
     with transaction(conn):
@@ -271,6 +277,6 @@ def pending_packages(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                   SUM(CASE WHEN i.status = 'pending' THEN 1 ELSE 0 END) AS pending,
                   SUM(CASE WHEN i.status = 'failed' THEN 1 ELSE 0 END) AS failed
            FROM recognition_packages p JOIN recognition_items i ON i.package_id = p.id
-           GROUP BY p.id HAVING pending > 0 OR failed > 0 ORDER BY p.created_at""",
+           WHERE p.model_configured != ? GROUP BY p.id HAVING pending > 0 OR failed > 0 ORDER BY p.created_at""", (MANUAL_MODEL,),
     ).fetchall()
     return [dict(r) for r in rows]

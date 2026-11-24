@@ -292,3 +292,11 @@ CREATE TABLE IF NOT EXISTS sheet_pages (
   applied_at TEXT NOT NULL,
   summary TEXT NOT NULL DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS chat_cut_packs (
+    id TEXT PRIMARY KEY, created_at TEXT NOT NULL, items INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chat_cut_receipts (
+    pack_id TEXT NOT NULL REFERENCES chat_cut_packs(id), item_id TEXT NOT NULL,
+    state TEXT NOT NULL, model TEXT NOT NULL, PRIMARY KEY (pack_id, item_id)
+);
