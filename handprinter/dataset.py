@@ -242,7 +242,8 @@ def coverage(conn: sqlite3.Connection) -> dict[str, Any]:
     status = {r["status"]: r["n"] for r in conn.execute(
         "SELECT status, COUNT(*) n FROM regions WHERE deleted = 0 AND kind IN ('word','line') GROUP BY status")}
     flagged = conn.execute("SELECT COUNT(*) FROM regions WHERE deleted = 0 AND flags != '[]' AND status != 'excluded'").fetchone()[0]
-    examples, excluded = eligible_examples(conn, "approved_only", Filters())
+    # paper and iPad pages both count here (export still lets you choose); the default Filters() is paper only
+    examples, excluded = eligible_examples(conn, "approved_only", Filters(source_types=("paper", "ipad")))
     by_kind = Counter("maths" if ex.maths else ex.kind for ex in examples)
     chars = Counter(ch for ex in examples if ex.kind == "word" and not ex.maths for ch in ex.text)
     marks = {r["cls"]: r["n"] for r in conn.execute("SELECT cls, COUNT(*) n FROM regions WHERE deleted = 0 AND kind = 'mark' GROUP BY cls")}
@@ -251,6 +252,9 @@ def coverage(conn: sqlite3.Connection) -> dict[str, Any]:
         "excluded_reasons": dict(excluded.most_common()), "characters": dict(chars.most_common()),
         "word_types": len({ex.text for ex in examples if ex.kind == "word" and not ex.maths}), "marks": marks,
         "pages": conn.execute("SELECT COUNT(*) FROM sources WHERE deleted = 0").fetchone()[0],
+        "pages_by_type": {r["source_type"]: r["n"] for r in conn.execute(
+            "SELECT source_type, COUNT(*) n FROM sources WHERE deleted = 0 GROUP BY source_type")},
+        "words_by_type": dict(Counter(ex.source_type for ex in examples if ex.kind == "word" and not ex.maths)),
         "pilot_target_words": [1000, 3000],
     }
 

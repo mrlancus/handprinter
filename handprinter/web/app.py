@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
-from handprinter import dataset, doctor, evaluation, imaging, ingest, jobs, pages, review, sheets, studio
+from handprinter import dataset, doctor, evaluation, imaging, ingest, jobs, pages, review, sheets, studio, training
 from handprinter.adapters import all_adapters
 from handprinter.config import MAX_UPLOAD_BYTES, ONLINE_MAX_UPLOAD_BYTES, Settings
 from handprinter.db import connect, dumps, init_db, new_id, now_iso, row_dict, transaction
@@ -642,6 +642,10 @@ def create_app(settings: Settings, extra_hosts: set[str] | None = None) -> FastA
             raise HTTPException(409, f"only {len(items)} usable training words in this snapshot "
                                      f"(left out: {left_out or 'none'}); approve at least {evaluation.MIN_TRAIN_WORDS} first")
         return {"job_id": jobs.enqueue(conn, "adapter_train", {"adapter": name, **body.model_dump()}), "train_words": len(items)}
+
+    @app.get("/api/experiments/readiness")
+    def training_readiness(conn: sqlite3.Connection = Depends(db)) -> dict[str, Any]:
+        return training.readiness(conn, store, settings)
 
     @app.get("/api/experiments/checkpoints")
     def checkpoints(conn: sqlite3.Connection = Depends(db)) -> list[dict[str, Any]]:

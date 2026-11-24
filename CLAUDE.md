@@ -33,7 +33,7 @@ Frontend: browser-native ES modules + JSDoc, checked by `tsc --checkJs` (dev onl
 | `tests/` | pytest suite + fixture generators (non-personal, synthetic) |
 | `scripts/` | Launchers (`setup_models.ps1` via `SetupModels.bat` sets up the model environment), screenshot harness |
 | `relay/` | Optional Cloudflare Worker giving online mode a fixed free workers.dev address (`worker.js`, tests: `node --test relay/worker.test.mjs`) |
-| `docs/` | Architecture, status, design system, model research, screenshots |
+| `docs/` | Architecture, status, design system, model research, training guide (`training.md`), screenshots |
 
 ## Data layout
 

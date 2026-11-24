@@ -77,8 +77,10 @@ function snapshotForm(cov, onDone) {
   const seed = /** @type {HTMLInputElement} */ (h('input', { type: 'number', value: '1234', class: 'input-narrow' }));
   const unseen = /** @type {HTMLInputElement} */ (h('input', { type: 'number', value: '10', min: '0', max: '50', class: 'input-narrow' }));
   const holdout = /** @type {HTMLInputElement} */ (h('input', { type: 'text', placeholder: 'session names, comma separated' }));
-  const paper = /** @type {HTMLInputElement} */ (h('input', { type: 'checkbox', checked: true }));
-  const ipad = /** @type {HTMLInputElement} */ (h('input', { type: 'checkbox' }));
+  // Start with the kinds of page you actually have (iPad-only collections would otherwise export nothing).
+  const byType = cov.pages_by_type || {};
+  const paper = /** @type {HTMLInputElement} */ (h('input', { type: 'checkbox', checked: !!byType.paper || !byType.ipad }));
+  const ipad = /** @type {HTMLInputElement} */ (h('input', { type: 'checkbox', checked: !!byType.ipad }));
   const current = /** @type {HTMLInputElement} */ (h('input', { type: 'checkbox', checked: true }));
   const older = /** @type {HTMLInputElement} */ (h('input', { type: 'checkbox' }));
   const advanced = /** @type {HTMLInputElement} */ (h('input', { type: 'checkbox' }));

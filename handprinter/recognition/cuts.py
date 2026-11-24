@@ -20,7 +20,7 @@ from typing import Any, Callable
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from handprinter import pages, review
+from handprinter import imaging, pages, review
 from handprinter.db import new_id, now_iso, transaction
 from handprinter.geometry import Box
 from handprinter.recognition import MAX_LONG_EDGE, refit
@@ -34,6 +34,7 @@ MAX_MARKS = 60          # gaps numbered per line (the widest ones; letters' own 
 WRITING_PX = 120        # the line is drawn about this tall, so letters are easy to read
 STRIP_ROWS = 3          # numbers are staggered over three rows so close gaps stay legible
 OPEN = ("unprocessed", "proposed", "needs_review")
+CHAT_BATCH_SIZE = 10    # lines per chat message in a manual chat pack (see chat.py)
 
 PROMPT = """# Word cuts (version c1)
 
@@ -185,6 +186,8 @@ def build(conn: sqlite3.Connection, store: Store, scope: str = "amber", source_i
         crop = gray[oy:oy + mask.shape[0], ox:ox + mask.shape[1]]
         image, scale = _render(crop, mask, own, marks)
         item_id = f"c{len(items) + 1:04d}"
+        if manual:
+            image = imaging.with_label(image, item_id)  # a chat reads which line is which
         image.save(root / "images" / f"{item_id}.png")
         items.append({
             "item_id": item_id, "image": f"images/{item_id}.png", "words": tokens, "text": line["text"],
@@ -198,6 +201,8 @@ def build(conn: sqlite3.Connection, store: Store, scope: str = "amber", source_i
             items[-1]["image_sha256"] = sha256_file(root / "images" / f"{item_id}.png")
     manifest = {"package_id": package_id, "kind": "word_cuts", "prompt_version": PROMPT_VERSION, "created_at": now_iso(),
                 "scope": scope, "items": items}
+    if manual:
+        manifest.update(chat_batch_size=CHAT_BATCH_SIZE, chat_labelled=True)
     atomic_write(root / "manifest.json", json.dumps(manifest, indent=1, ensure_ascii=False).encode("utf-8"))
     if manual and items:
         conn.execute("INSERT INTO chat_cut_packs (id, created_at, items) VALUES (?,?,?)",

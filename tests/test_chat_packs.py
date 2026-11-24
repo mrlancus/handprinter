@@ -4,7 +4,9 @@ import json
 import zipfile
 
 from handprinter import pages, review
-from handprinter.recognition import cuts, package
+from PIL import Image
+
+from handprinter.recognition import chat, cuts, package
 from tests.test_api_e2e import drain, make_client
 from tests.test_word_cuts import _page, _true_cuts
 
@@ -30,13 +32,15 @@ def test_transcription_zip_partial_import_replay_and_resume(conn, store, setting
     assert not package.pending_packages(conn)
     base = "/api/chat-packs/" + pack
     state = client.get(base).json()
-    assert state["batches"] == 2 and state["images"] == ["i0001", "i0002", "i0003", "i0004"]
+    all_ids = [it["item_id"] for it in package.load_manifest(store, pack)["items"]]
+    assert 4 <= len(all_ids) <= chat.BATCH_SIZE  # a page's lines fit one chat message
+    assert state["batches"] == 1 and state["images"] == all_ids
     url = base + "/batches/1"
     with zipfile.ZipFile(io.BytesIO(client.get(url + "/download").content)) as z:
         assert set(z.namelist()) == {"prompt.txt", *(key + ".png" for key in state["images"])}
         assert z.read("prompt.txt").decode() == state["prompt"]
         assert z.read("i0002.png") == client.get(url + "/images/i0002.png").content
-    assert client.get(url + "/images/i0005.png").status_code == 404
+    assert client.get(url + "/images/i9999.png").status_code == 404
     it = package.load_manifest(store, pack)["items"][1]
     review.human_edit(conn, it["region_id"], {"text": "my correction", "status": "approved"})
     good = dict(item_id="i0002", region_type="handwriting", transcription="example",
@@ -51,7 +55,7 @@ def test_transcription_zip_partial_import_replay_and_resume(conn, store, setting
     prop = conn.execute("SELECT model_reported, stale, applied FROM proposals WHERE package_id=?", (pack,)).fetchone()
     assert tuple(prop) == ("Chat: Gemini", 1, 0)
     assert review.get_region(conn, it["region_id"])["text"] == "my correction"
-    assert make_client(settings).get(base).json()["images"] == ["i0001", "i0003", "i0004"]
+    assert make_client(settings).get(base).json()["images"] == [i for i in all_ids if i != "i0002"]
     again = finish(client, settings, client.post(url + "/reply", json=reply(pack, 1, "Gemini", good)))
     assert again["previous"] == 1 and again["applied"] == 0
 
@@ -76,6 +80,42 @@ def test_manual_cuts_keep_human_edits_and_resume_across_chats(conn, store, setti
     out = finish(client, settings, client.post(url, json=reply(pack, 1, "Gemini", first, third)))
     assert out["previous"] == out["applied"] == 1
     assert make_client(settings).get(packs).json()[0]["processed"] == 3
-    assert client.get(base).json()["images"] == ["c0004"]
+    assert client.get(base).json()["images"] == [it["item_id"] for it in items[3:chat.BATCH_SIZE]]
     models = {r[0] for r in conn.execute("SELECT model FROM chat_cut_receipts WHERE state='applied'")}
     assert models == {"Chat: Gemini", "Chat: ChatGPT"}
+
+
+def test_each_chat_image_shows_its_id_and_keeps_its_coordinates(conn, store, settings, fixture_source, import_bytes):
+    """A chat may not see filenames and may reorder attachments: the ID printed on the image decides."""
+    sid = fixture_source()
+    pages.run_detection(conn, store, sid)
+    from dataclasses import replace
+    rec = package.build(conn, store, replace(settings, recognition_model=package.MANUAL_MODEL), [sid], False, False)
+    root, items = chat.open_pack(store, rec["package_id"])
+    assert items.labelled and items.size == chat.BATCH_SIZE
+    for it in items:
+        with Image.open(root / it["image"]) as im:
+            assert (im.width, im.height) == (it["width"], it["height"])
+            band = im.convert("L").crop((0, im.height - 30, im.width, im.height))
+            assert min(band.getdata()) < 80  # dark text printed in the band
+            # the band is extra rows below: a box in image pixels still maps to the same place on the page
+            x, y, w, h = it["target_box"]
+            assert y + h <= im.height - 40 + 1  # the line sits in the writing part, above the band
+        assert abs(it["to_source"]["scale_x"] - it["to_source"]["scale_y"]) < 0.05  # not stretched by the band
+    text = chat.describe(conn, store, rec["package_id"], None)["prompt"]
+    assert "printed" in text and "do not rely on filenames" in text
+
+    cut = cuts.build(conn, store, "all", [_page(conn, store, import_bytes)], manual=True)
+    root, items = chat.open_pack(store, cut["package_id"])
+    assert items.labelled and "printed" in chat.describe(conn, store, cut["package_id"], None)["prompt"]
+
+
+def test_old_packs_keep_their_batches_of_four(conn, store, settings, import_bytes):
+    cut = cuts.build(conn, store, "all", [_page(conn, store, import_bytes)], manual=True)
+    path = cuts.package_dir(store, cut["package_id"]) / "manifest.json"
+    m = json.loads(path.read_text())
+    for k in ("chat_batch_size", "chat_labelled"):
+        m.pop(k)
+    path.write_text(json.dumps(m))
+    state = chat.describe(conn, store, cut["package_id"], None)
+    assert len(state["images"]) == min(4, cut["items"]) and "filename" in state["prompt"]

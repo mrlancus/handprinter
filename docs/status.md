@@ -31,7 +31,8 @@ Nothing has been verified with your real handwriting.
 | Headless `claude -p` automation | implemented, not run | Off by default. The flags were checked against `claude --help`; no headless chunk was executed here. |
 | Writing sheets: fill in from the sheet, re-cut all pages | fixtures; checked on 5 of your pages rebuilt from screenshots | Lines are matched by how their ink cuts into each sheet line's words (finds a skipped line); detection pieces are joined into rows. `tests/test_sheets.py`. |
 | Word boxes by Haiku (numbered gaps) | fixtures; **live with a Haiku subagent** on your sheet 1004 rebuilt from a screenshot | The app numbers every gap in a line's ink; the `word-cutter` subagent (Haiku) picks the gaps between words; the app cuts exactly there. 11 of 11 lines right, 1 marked unsure. Headless from the app in online mode, else via `/recognise`. `tests/test_word_cuts.py`. |
-| Manual chat packs for transcription and word boxes | fixture-tested | Download up to four PNGs and the prompt, import JSON, and resume in Recognition packages. No provider login is used by Handprinter. |
+| Manual chat packs for transcription and word boxes | fixture-tested; built on sheet 1004 rebuilt from a screenshot | Up to 10 images per batch, each with its ID printed in a grey band, so a chat matches answers by what it reads, not by filenames or upload order (a swapped answer was accepted before). Copy the prompt, paste the JSON reply. ChatGPT, Gemini, Claude or any vision chat; no provider login is used by Handprinter. |
+| Training readiness (Experiments → Ready to train?) | fixtures | Each step from approved words to a fine-tune, the next highlighted, with a suggested step count. Guide: `docs/training.md`. Dataset coverage now counts iPad pages, and export starts with the page types you have (it was paper only, which would have exported nothing from GoodNotes pages). `tests/test_training.py`. |
 | Durable jobs, cancel, retry, restart recovery | fixtures | `tests/test_jobs.py`. |
 | Security: loopback, Host/Origin checks, request token, LAN sign-in | fixtures | `tests/test_api_e2e.py`. |
 | Studio: assets, canvas layout in mm, flow, undo/redo, save/open, PNG export at a set dpi | fixtures | The export size check is 100×50 mm at 254 dpi = 1000×500 px. |
@@ -81,7 +82,7 @@ All reviews were done by Sonnet subagents.
 1. On your PC, run `python -m handprinter doctor` and share the GPU and VRAM line.
 2. Import 5–10 real pages, check that detection is usable, and tune `NEAR_DUPLICATE_*` if needed.
 3. Run `/recognise` in a fresh Claude Code session on a small package, then review the results.
-4. Run `SetupModels.bat`, then in Experiments: Download weights, then Run memory preflight, then baseline, then Fine-tune (see `docs/model-experiments.md`, "Plan").
+4. Follow Experiments → **Ready to train?** (guide: `docs/training.md`): snapshot with iPad ticked, `SetupModels.bat`, Download weights, memory preflight, baseline, Fine-tune.
 
 ## Pull request
 

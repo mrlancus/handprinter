@@ -6,6 +6,7 @@ import io
 from dataclasses import dataclass
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -271,3 +272,26 @@ def png_bytes(img: Image.Image) -> bytes:
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=False, compress_level=6)
     return buf.getvalue()
+
+
+def with_label(img: Image.Image, text: str, band: int = 40) -> Image.Image:
+    """The image with `text` printed in a grey band added below it (the image's own pixels keep their coordinates).
+
+    Chat packs print each image's item ID on it, so a chat matches answers to images by what it reads,
+    never by filenames or upload order (which chats may not see or may shuffle).
+    """
+    from PIL import ImageDraw, ImageFont
+
+    out = Image.new("RGB", (max(img.width, 160), img.height + band), "white")
+    out.paste(img.convert("RGB"), (0, 0))
+    draw = ImageDraw.Draw(out)
+    draw.rectangle([0, img.height, out.width, out.height], fill=(225, 225, 225))
+    font: Any = None
+    for name in ("DejaVuSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "arialbd.ttf", "arial.ttf"):
+        try:
+            font = ImageFont.truetype(name, int(band * 0.6))
+            break
+        except OSError:
+            continue
+    draw.text((8, img.height + band * 0.15), f"ID: {text}", fill=(0, 0, 0), font=font or ImageFont.load_default(int(band * 0.6)))
+    return out

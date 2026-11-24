@@ -17,22 +17,40 @@ export async function render(root) {
   async function load() {
     mount(body, loadingState(3));
     try {
-      const [adapters, runs, prompts, profiles, snaps, cmpWord, cmpLine, checkpoints] = await Promise.all([
+      const [adapters, runs, prompts, profiles, snaps, cmpWord, cmpLine, checkpoints, readiness] = await Promise.all([
         api('/api/experiments/adapters'), api('/api/experiments/runs'), api('/api/experiments/prompts'), api('/api/experiments/style-profiles'),
         api('/api/dataset/snapshots'), api('/api/experiments/comparison?level=word'), api('/api/experiments/comparison?level=line'),
-        api('/api/experiments/checkpoints'),
+        api('/api/experiments/checkpoints'), api('/api/experiments/readiness'),
       ]);
       const ready = adapters.filter((/** @type {any} */ a) => a.state === 'ready');
       mount(body,
+        readinessPanel(readiness),
         h('div', { class: 'ex-adapters' }, adapters.map((/** @type {any} */ a) => adapterCard(a, load))),
         generatePanel(ready, profiles, prompts, checkpoints),
-        trainPanel(ready.filter((/** @type {any} */ a) => a.capabilities.can_train_in_app), snaps, checkpoints, load),
+        trainPanel(ready.filter((/** @type {any} */ a) => a.capabilities.can_train_in_app), snaps, checkpoints, load, readiness.suggested_steps),
         h('div', { class: 'ex-grid' }, profilesPanel(profiles, snaps, load), promptsPanel(prompts)),
         comparisonPanel(cmpWord, cmpLine),
         runsPanel(runs));
     } catch (err) { mount(body, errorState(err, load)); }
   }
   load();
+}
+
+/**
+ * Ready to train? Every step from approved words to a fine-tuned model, the next one highlighted.
+ * @param {{steps: {key: string, title: string, done: boolean, detail: string, link: string | null, blocking: boolean}[], next: string | null, ready_to_train: boolean}} r
+ */
+function readinessPanel(r) {
+  return h('section', { class: 'panel' },
+    h('div', { class: 'panel__head' }, h('h2', { text: 'Ready to train?' }),
+      r.ready_to_train ? h('span', { class: 'badge badge--ok' }, icon('check'), 'Ready') : h('span', { class: 'badge badge--review' }, 'Not yet')),
+    h('ol', { class: 'panel__body ex-ready', role: 'list' }, r.steps.map((s) => h('li', { class: `ex-ready__step${s.key === r.next ? ' ex-ready__step--next' : ''}` },
+      h('span', { class: s.done ? 'ex-ok' : 'ex-no', 'aria-hidden': 'true' }, icon(s.done ? 'check' : s.key === r.next ? 'right' : 'x')),
+      h('div', { class: 'stack' },
+        h('strong', {}, s.title, s.blocking ? '' : h('span', { class: 'xs muted', text: ' (recommended)' }), h('span', { class: 'sr-only', text: s.done ? ' done' : ' to do' })),
+        h('span', { class: 'small', text: s.detail }),
+        !s.done && s.link && !location.hash.startsWith(s.link) ? h('a', { class: 'xs', href: s.link }, 'Go there') : null)))),
+    h('p', { class: 'panel__body xs muted' }, 'Step-by-step guide: docs/training.md in the Handprinter folder.'));
 }
 
 /** @param {any} a @param {() => void} reload */
@@ -112,13 +130,13 @@ function generatePanel(ready, profiles, prompts, checkpoints) {
       out));
 }
 
-/** @param {any[]} trainable @param {any[]} snaps @param {any[]} checkpoints @param {() => void} reload */
-function trainPanel(trainable, snaps, checkpoints, reload) {
+/** @param {any[]} trainable @param {any[]} snaps @param {any[]} checkpoints @param {() => void} reload @param {number} suggested */
+function trainPanel(trainable, snaps, checkpoints, reload, suggested) {
   if (!trainable.length) return null;
   const adapter = /** @type {HTMLSelectElement} */ (h('select', {}, trainable.map((a) => h('option', { value: a.name }, a.title))));
   const snap = /** @type {HTMLSelectElement} */ (h('select', {}, snaps.map((s) => h('option', { value: s.id }, `${s.name} (${s.counts.words} words)`))));
   const name = /** @type {HTMLInputElement} */ (h('input', { type: 'text', value: 'my handwriting', maxlength: 80 }));
-  const steps = /** @type {HTMLInputElement} */ (h('input', { type: 'number', value: '2000', min: '50', max: '50000', step: '50' }));
+  const steps = /** @type {HTMLInputElement} */ (h('input', { type: 'number', value: String(suggested || 2000), min: '50', max: '50000', step: '50' }));
   const out = h('div', { class: 'stack' });
   async function start() {
     try {
